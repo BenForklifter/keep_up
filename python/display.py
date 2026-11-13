@@ -20,6 +20,7 @@ Thread-safe: speech, knob and the refresh timer call in from different threads.
 import textwrap
 import threading
 import time
+import traceback
 from dataclasses import dataclass
 from html import escape
 
@@ -40,6 +41,7 @@ OLD_LINE_GRAY = 0.55
 LINE_CHARS = 24  # transcript: characters per line ...
 MAX_LINES = 3  # ... and number of lines (newest text wins)
 KEPT_LINES = 10  # transcript lines remembered
+KEYWORD_PAUSE = 0.4  # seconds between key word analyses (leaves CPU to speech recognition)
 
 SPEAKER_DOT = "●"
 MUTED_TEXT = "Microphone muted"
@@ -62,25 +64,29 @@ class Display:
         self._message = ""  # status text instead of speech ("Listening ...")
         self._info = ""  # bottom-right corner: energy / carbon figures
         self._frame = None  # last frame written
+        self._unanalyzed: dict[int, _Line] = {}  # lines changed since the keyword thread looked
+        self._new_text = threading.Event()
+        threading.Thread(target=self._find_keywords_forever, daemon=True).start()
 
     # --- input ----------------------------------------------------------------
 
     def heard(self, line_id: int, text: str, complete: bool) -> None:
-        """A line of speech changed (see speech.SpeechToText)."""
-        found = keywords(text)  # the slow part, done outside the lock
-        if complete:
-            print(f"   key words: {', '.join(k.text for k in found) or '-'}")
+        """A line of speech changed (see speech.SpeechToText).
+
+        Called from the speech recognition thread, so it only takes note and returns:
+        the transcript is shown at once, key words are found in their own thread.
+        """
         mic = read_mic_state()
         with self._lock:
-            now = time.monotonic()
             self._message, self._mic = "", mic
             line = self._lines.get(line_id) or _Line(text, complete, mic.direction)
             line.text, line.complete = text, complete
             self._lines[line_id] = line
             for old in list(self._lines)[:-KEPT_LINES]:
                 del self._lines[old]
-            self._board.hear(line_id, found, now, line.direction)
-            self._render(now)
+            self._unanalyzed[line_id] = _Line(text, complete, line.direction)
+            self._render(time.monotonic())
+        self._new_text.set()
 
     def turn(self, steps: int) -> None:
         """Knob turned: change the level, clamped to 1 word ... LIVE."""
@@ -109,6 +115,34 @@ class Display:
         with self._lock:
             self._mic = mic
             self._render(time.monotonic())
+
+    # --- key words --------------------------------------------------------------
+
+    def _find_keywords_forever(self) -> None:
+        """Feed the board with the key words of changed lines.
+
+        Runs at most every KEYWORD_PAUSE seconds, so spaCy leaves the CPU to speech
+        recognition. Lines that changed several times meanwhile are analyzed in
+        their latest version only; the board counts each word once per line either way.
+        """
+        while True:
+            self._new_text.wait()
+            time.sleep(KEYWORD_PAUSE)
+            self._new_text.clear()
+            with self._lock:
+                lines, self._unanalyzed = self._unanalyzed, {}
+            for line_id, line in lines.items():
+                try:
+                    found = keywords(line.text, final=line.complete)
+                except Exception:
+                    traceback.print_exc()  # keep going with the next lines
+                    continue
+                if line.complete:
+                    print(f"   key words: {', '.join(k.text for k in found) or '-'}")
+                with self._lock:
+                    now = time.monotonic()
+                    self._board.hear(line_id, found, now, line.direction)
+                    self._render(now)
 
     # --- output ---------------------------------------------------------------
 

@@ -44,14 +44,22 @@ def on_line(line_id: int, text: str, complete: bool) -> None:
     display.heard(line_id, text, complete)
 
 
+def on_knob_turned(steps) -> None:
+    print(f"knob: turned {steps}")
+    display.turn(int(steps))
+
+
+def on_knob_pressed() -> None:
+    print("knob: pressed")
+    display.press()
+
+
 def refresh_forever():
     while True:
         time.sleep(REFRESH_SECONDS)
         display.tick()
 
 
-Bridge.provide("knob_turned", lambda steps: display.turn(int(steps)))
-Bridge.provide("knob_pressed", display.press)
 def measure_forever():
     meter, last_log = CarbonMeter(), time.monotonic()
     while True:
@@ -63,6 +71,8 @@ def measure_forever():
             print(meter.log_line())
 
 
+Bridge.provide("knob_turned", on_knob_turned)
+Bridge.provide("knob_pressed", on_knob_pressed)
 threading.Thread(target=refresh_forever, daemon=True).start()
 threading.Thread(target=measure_forever, daemon=True).start()
 

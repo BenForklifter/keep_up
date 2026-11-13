@@ -17,7 +17,9 @@ on_line(line_id, text, complete) is called whenever the text of a line changes;
 a line keeps its id while it is revised and stops changing once complete.
 """
 
+import os
 import threading
+import time
 from collections import deque
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -38,11 +40,19 @@ MODEL_ARCH = ModelArch.TINY_STREAMING
 # Downloaded on the first start; deploy.sh keeps this folder on the board.
 MODEL_DIR = Path(__file__).resolve().parents[1] / "models"
 RATE = 16000
-UPDATE_INTERVAL = 0.3  # seconds between caption updates (Moonshine stretches it when busy)
-MAX_BACKLOG = 3.0  # seconds; if recognition falls further behind, the oldest audio is dropped
+UPDATE_INTERVAL = 0.5  # seconds between caption updates (Moonshine stretches it when busy)
+MAX_BACKLOG = 3.0  # seconds; if recognition falls further behind, old audio is dropped ...
+CATCH_UP_TO = 1.0  # ... at once down to this, so words get cut once rather than again and again
+SPEED_LOG_SECONDS = 15.0  # how often the log says whether recognition keeps up
+# Every update hands back all lines of its stream; renewing the stream in a pause
+# keeps that short.
+LINES_PER_STREAM = 20
 OPTIONS = {
     "transcription_interval": UPDATE_INTERVAL,  # library default 0.5 s would override ours
-    "vad_max_segment_duration": 6.0,  # cut lines after 6 s (default 15): cheaper updates
+    "vad_max_segment_duration": 4.0,  # cut lines after 4 s (default 15): cheaper updates
+    # Default true: every update would also hand back the audio of every line so
+    # far, copied into Python lists - more work the longer the conversation runs.
+    "return_audio_data": "false",
 }
 
 LineCallback = Callable[[int, str, bool], None]
@@ -55,29 +65,46 @@ class SpeechToText:
         self._transcriber = Transcriber(model_path=model_path, model_arch=model_arch,
                                         options=OPTIONS)
         self._on_line = on_line
+        print(f"speech: {MODEL_ARCH.name} model, {_cpus()}")
+        self._lines_done = 0  # completed lines in the current stream
+        self._speaking = False  # a line is open
 
     def run(self, blocks: Iterator[np.ndarray]) -> None:
         """Transcribe mono int16 16 kHz sample blocks until they end or fail."""
-        audio = _AudioBuffer(int(MAX_BACKLOG * RATE))
+        audio = _AudioBuffer(int(MAX_BACKLOG * RATE), int(CATCH_UP_TO * RATE))
         threading.Thread(target=audio.fill_from, args=(blocks,), daemon=True).start()
 
-        stream = self._transcriber.create_stream(update_interval=UPDATE_INTERVAL)
-        stream.add_listener(self._on_event)
-        stream.start()
+        stream = self._open_stream()
+        speed = _SpeedLog()
         try:
             while (samples := audio.take()) is not None:
+                started = time.monotonic()
                 stream.add_audio((samples / 32768.0).tolist(), RATE)
+                speed.add(len(samples) / RATE, time.monotonic() - started)
+                if self._lines_done >= LINES_PER_STREAM and not self._speaking:
+                    stream.stop()
+                    stream.close()
+                    stream = self._open_stream()
         finally:
             stream.stop()
             stream.close()
             audio.close()
+
+    def _open_stream(self):
+        stream = self._transcriber.create_stream(update_interval=UPDATE_INTERVAL)
+        stream.add_listener(self._on_event)
+        stream.start()
+        self._lines_done, self._speaking = 0, False
+        return stream
 
     def _on_event(self, event) -> None:
         # A line that changes as it completes gets both events: report it once.
         if (isinstance(event, LineCompleted) or
                 isinstance(event, LineTextChanged) and not event.line.is_complete):
             line = event.line
+            self._speaking = not line.is_complete
             if line.is_complete:
+                self._lines_done += 1
                 print(f"📝 {line.text.strip()}  "
                       f"[{line.duration:.1f}s of speech, last update took {line.last_transcription_latency_ms} ms]")
             self._on_line(line.line_id, line.text.strip(), line.is_complete)
@@ -85,16 +112,51 @@ class SpeechToText:
             print(f"Speech recognition error: {event.error!r}")
 
 
+def _cpus() -> str:
+    """How much CPU this process may use (a container can be limited)."""
+    cores = len(os.sched_getaffinity(0))
+    try:
+        quota, period = Path("/sys/fs/cgroup/cpu.max").read_text().split()
+        limit = "no limit" if quota == "max" else f"limited to {int(quota) / int(period):.1f}"
+    except (OSError, ValueError):
+        limit = "limit unknown"
+    return f"{cores} CPU cores ({limit})"
+
+
+class _SpeedLog:
+    """Logs every SPEED_LOG_SECONDS of audio whether recognition keeps up.
+
+    busy: share of real time spent recognizing; near or above 100 % the captions
+    fall behind. waited: the most audio that piled up while the recognizer was
+    busy, i.e. how late words reached it.
+    """
+
+    def __init__(self):
+        self._audio = self._busy = self._waited = 0.0
+
+    def add(self, audio_seconds: float, busy_seconds: float) -> None:
+        self._audio += audio_seconds
+        self._busy += busy_seconds
+        self._waited = max(self._waited, audio_seconds)
+        if self._audio >= SPEED_LOG_SECONDS:
+            print(f"speech: busy {self._busy / self._audio:.0%} of real time, "
+                  f"audio waited up to {self._waited:.1f}s")
+            self._audio = self._busy = self._waited = 0.0
+
+
 class _AudioBuffer:
     """Microphone samples on their way from the reader thread to the recognizer.
 
     The recognizer works in bursts and can stall (model warm-up, CPU spikes); the
-    reader must never block meanwhile. Audio older than `max_samples` is dropped
-    so the captions catch up with the table instead of lagging ever further.
+    reader must never block meanwhile. Once more than `max_samples` wait, the
+    oldest audio is dropped down to `keep_samples`, so the captions catch up with
+    the table instead of lagging ever further - in one cut, as every cut garbles
+    the words around it.
     """
 
-    def __init__(self, max_samples: int):
+    def __init__(self, max_samples: int, keep_samples: int):
         self._max = max_samples
+        self._keep = keep_samples
         self._blocks = deque()
         self._size = 0
         self._closed = False
@@ -131,11 +193,11 @@ class _AudioBuffer:
         with self._ready:
             self._blocks.append(block)
             self._size += len(block)
-            dropped = 0
-            while self._size > self._max and len(self._blocks) > 1:
-                old = self._blocks.popleft()
-                self._size -= len(old)
-                dropped += len(old)
-            if dropped:
+            if self._size > self._max:
+                dropped = 0
+                while self._size > self._keep and len(self._blocks) > 1:
+                    old = self._blocks.popleft()
+                    self._size -= len(old)
+                    dropped += len(old)
                 print(f"(recognition behind, dropped {dropped / RATE:.1f}s of audio)")
             self._ready.notify()
