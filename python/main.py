@@ -26,7 +26,15 @@ from display import Display
 from microphone import TableMic
 from sci import CarbonMeter
 from shared import read_names
-from speech import SpeechToText
+
+# Speech recognizer: "moonshine" (speech.py) or "kroko" (speech_kroko.py). On a laptop
+# benchmark Kroko was clearly more accurate and lighter (tools/eval/results/); switch
+# once confirmed on the board.
+ASR = "kroko"
+if ASR == "kroko":
+    from speech_kroko import SpeechToText
+else:
+    from speech import SpeechToText
 
 REFRESH_SECONDS = 0.25  # how often the board is re-arranged (fading, dwell times)
 SCI_SAMPLE_SECONDS = 5.0  # how often power is estimated and the corner updated

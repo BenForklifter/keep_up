@@ -1,0 +1,8 @@
+# expect: Japan, Tokyo, Kyoto, temples, sushi, holiday
+# ok: weeks, train, cherry blossoms, spring, hotel, food
+B: We are planning a holiday in Japan next spring.
+A: Amazing! Tokyo first?
+B: Three days in Tokyo, then the fast train to Kyoto for the temples.
+C: You have to go during the cherry blossoms, it is so beautiful.
+A: And eat as much sushi as you can. The food there is incredible.
+B: That is the plan. Two whole weeks, no laptop.

@@ -51,6 +51,10 @@ RARITY_GAIN = 0.3
 # Every noun of everyday talk passes (zipf below ~6.3); verbs and adjectives only
 # when rare (zipf below ~3.7).
 MIN_WEIGHT = 1.2
+# Single words English has (almost) never seen are nearly always misheard ("pung",
+# "bellad"), and their rarity would make them look important. tools/eval: top-5 key
+# words that matter 75 -> 81 % (Kroko), 62 -> 65 % (Moonshine), no real ones lost.
+KNOWN_ZIPF = 1.0
 
 # Nouns without content, and spoken fillers spaCy's stop list doesn't know
 # (compared with both the word and its lemma, so "lots" -> "lot" is caught).
@@ -79,7 +83,8 @@ def keywords(text: str, final: bool = True) -> list[Keyword]:
     found += [(token.i, _word(token)) for token in doc
               if token.i not in in_entity and token.i != unsettled
               and token.pos_ in KIND and not token.is_stop and not _vague(token)]
-    return [k for _, k in sorted(found, key=lambda f: f[0]) if k and k.weight >= MIN_WEIGHT]
+    return [k for _, k in sorted(found, key=lambda f: f[0])
+            if k and k.weight >= MIN_WEIGHT and _known(k)]
 
 
 def _entity(ent) -> Keyword | None:
@@ -95,6 +100,10 @@ def _word(token) -> Keyword:
     key = token.lemma_.lower() if token.pos_ != "PROPN" else token.lower_
     weight = KIND[token.pos_] * (1 + RARITY_GAIN * _rarity(token.lower_))
     return Keyword(key, token.text, weight)
+
+
+def _known(k: Keyword) -> bool:
+    return " " in k.text or zipf_frequency(k.text.lower(), "en") >= KNOWN_ZIPF
 
 
 def _vague(token) -> bool:
