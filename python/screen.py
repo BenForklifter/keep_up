@@ -27,8 +27,10 @@ you" at the top, and the glow towards the speaker turns orange too.
 
 Setting it up, once: tap (or click) the screen and a Settings button shows for a
 few seconds. It opens a card with
-- buttons to turn and flip the glow until it points at whoever speaks - that
-  depends on how the mic array lies on the table;
+- a picture of the mic array as seen from in front of the screen - a disc with
+  its USB cable, and the LED towards whoever speaks lit like on the array - and
+  buttons to turn and flip it until the cable runs as on the table; then the
+  glow points at whoever speaks;
 - the names the person at the screen is called by ("Mary, Grandma"), typed on an
   on-screen keyboard (or a real one) in a card of its own.
 Changes are saved right away (shared.SETTINGS_FILE); Done, or a minute
@@ -43,7 +45,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field, fields
 
-from shared import SETTINGS_FILE, clean_names, read_json, write_json
+from shared import SETTINGS_FILE, clean_names, read_json, speaker_color, write_json
 
 os.environ.setdefault("DISPLAY", ":0")
 os.environ.setdefault("XAUTHORITY", os.path.expanduser("~/.Xauthority"))
@@ -86,7 +88,20 @@ OFFER_SECONDS = 8  # the Settings button goes again after this long ...
 SETTINGS_SECONDS = 60  # ... a settings card after this long untouched
 OFFER_BOTTOM = 96  # pixels between the Settings button and the bottom edge
 DIRECTION_TITLE = "Speaker direction"
-DIRECTION_TEXT = "Let someone talk, then turn the blue glow\nuntil it points at them."
+DIRECTION_TEXT = ("Turn the picture until the cable runs\n"
+                  "as on the table, seen from in front of\n"
+                  "the screen. Then let someone talk: the\n"
+                  "glow should point at them, else Flip.")
+
+# The picture of the mic array in the settings, seen from above (the screen's viewer
+# at the bottom): a dark disc with its ring of 12 LEDs and the USB cable.
+CABLE_DIRECTION = 0  # where the cable leaves the array, in mic array degrees: talk
+                     # from the cable's side and read "direction" in .board/mic.json
+PREVIEW_SIZE = 168  # pixels
+PREVIEW_BODY = (0x24 / 255,) * 3  # #242424
+PREVIEW_LED = (0x75 / 255,) * 3  # #757575, LEDs that are off
+PREVIEW_CABLE = (0x61 / 255,) * 3  # #616161
+LEDS = 12
 NAMES_TITLE = "Name"
 NAMES_TEXT = ("What is the person at this screen called? Several names\n"
               "with commas between them, e.g. \"Mary, Grandma\". When someone\n"
@@ -254,6 +269,8 @@ class Screen:
         if direction is not None:
             self._last_direction = direction
         self._update_glow()
+        if self._panel == "settings":
+            self._preview.queue_draw()  # its LED towards the speaker
         return False  # run once
 
     def _update_glow(self):
@@ -306,11 +323,20 @@ class Screen:
         self._offer.set_margin_bottom(OFFER_BOTTOM)
         self._offer.add(_button("Settings", lambda: self._show_panel("settings"), "offer"))
 
+        self._preview = Gtk.DrawingArea(valign=Gtk.Align.CENTER)
+        self._preview.set_size_request(PREVIEW_SIZE, PREVIEW_SIZE)
+        self._preview.connect("draw", self._draw_preview)
         turns = Gtk.Box(spacing=12)
         for button in (_button("↺  Turn left", lambda: self._turn(-TURN_STEP)),
                        _button("↻  Turn right", lambda: self._turn(TURN_STEP)),
                        _button("⇅  Flip", self._flip)):
             turns.add(button)
+        controls = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER)
+        controls.add(_styled(Gtk.Label(label=DIRECTION_TEXT, xalign=0), "text"))
+        controls.add(turns)
+        direction = Gtk.Box(spacing=28, margin_top=8)
+        direction.add(self._preview)
+        direction.add(controls)
         names = Gtk.Box(spacing=12)
         self._names_label = _styled(Gtk.Label(xalign=0, hexpand=True, max_width_chars=26,
                                               ellipsize=Pango.EllipsizeMode.END), "value")
@@ -321,8 +347,7 @@ class Screen:
         done.set_halign(Gtk.Align.END)
         done.set_margin_top(28)
         self._card = _card(_styled(Gtk.Label(label=DIRECTION_TITLE, xalign=0), "title"),
-                           _styled(Gtk.Label(label=DIRECTION_TEXT, xalign=0), "text"),
-                           turns,
+                           direction,
                            _styled(Gtk.Label(label=NAMES_TITLE, xalign=0), "title", "section"),
                            names, done)
 
@@ -421,8 +446,9 @@ class Screen:
         self._settings_changed()
 
     def _settings_changed(self):
-        """Save, move the glow, and keep the card open a while longer."""
+        """Save, move the glow and the picture, and keep the card open a while longer."""
         write_json(SETTINGS_FILE, asdict(self._settings))
+        self._preview.queue_draw()
         self._show_panel("settings")
 
     def _set_cursor(self, visible):
@@ -431,6 +457,38 @@ class Screen:
         if gdk_window:
             kind = Gdk.CursorType.LEFT_PTR if visible else Gdk.CursorType.BLANK_CURSOR
             gdk_window.set_cursor(Gdk.Cursor.new_for_display(gdk_window.get_display(), kind))
+
+    def _draw_preview(self, widget, cr):
+        """The mic array seen from above, turned and flipped like the settings turn
+        and flip its directions to the screen: the cable runs where it runs on the
+        table, and the LED towards the speaker (the last one, in silence) is lit in
+        their color, like on the array."""
+        width, height = widget.get_allocated_width(), widget.get_allocated_height()
+        size = min(width, height)
+        radius = size * 0.3
+        cr.translate(width / 2, height / 2)
+
+        cable_x, cable_y = _unit(self._settings.angle(CABLE_DIRECTION))
+        cr.set_source_rgb(*PREVIEW_CABLE)
+        for thickness, start, end in ((0.06, 0, size / 2),  # the cable to the edge ...
+                                      (0.11, radius * 0.8, radius + size * 0.07)):  # ... its plug
+            cr.set_line_width(size * thickness)
+            cr.move_to(cable_x * start, cable_y * start)
+            cr.line_to(cable_x * end, cable_y * end)
+            cr.stroke()
+
+        cr.set_source_rgb(*PREVIEW_BODY)
+        cr.arc(0, 0, radius, 0, 2 * math.pi)
+        cr.fill()
+
+        lit = self._direction if self._direction is not None else self._last_direction
+        for led in range(LEDS):
+            direction = led * 360 // LEDS
+            x, y = _unit(self._settings.angle(direction))
+            on = lit is not None and round(lit * LEDS / 360) % LEDS == led
+            cr.set_source_rgb(*(_rgb(speaker_color(direction)) if on else PREVIEW_LED))
+            cr.arc(x * radius * 0.75, y * radius * 0.75, size * (0.035 if on else 0.022), 0, 2 * math.pi)
+            cr.fill()
 
     # --- drawing ----------------------------------------------------------------
 
@@ -604,10 +662,20 @@ def _button(label, action, *css_classes):
 def _edge_point(angle, width, height):
     """Where a line from the screen center at angle (0 = up, clockwise) meets the
     screen edge: x, y, and whether that is the left or right edge."""
-    dx, dy = math.sin(math.radians(angle)), -math.cos(math.radians(angle))
+    dx, dy = _unit(angle)
     on_side_edge = abs(dx) * height > abs(dy) * width
     reach = width / 2 / abs(dx) if on_side_edge else height / 2 / abs(dy)
     return width / 2 + dx * reach, height / 2 + dy * reach, on_side_edge
+
+
+def _unit(angle):
+    """x, y of length 1 towards angle (0 = up, clockwise; y grows downwards)."""
+    return math.sin(math.radians(angle)), -math.cos(math.radians(angle))
+
+
+def _rgb(color):
+    """0xRRGGBB -> r, g, b in 0..1."""
+    return (color >> 16 & 255) / 255, (color >> 8 & 255) / 255, (color & 255) / 255
 
 
 def _layout(cr, text, markup):
