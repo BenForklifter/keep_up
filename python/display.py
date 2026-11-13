@@ -9,9 +9,9 @@ Fresh words are black and turn gray as they age, so a glance tells what was
 just said and what is the topic from before. In the transcript the line being
 spoken is black, earlier lines gray.
 
-With the reSpeaker mic array, a colored dot before a word (or transcript line)
-tells who said it: it has the color of the LED that lit up towards the speaker.
-While the array's mute button is on, the screen says so.
+With the reSpeaker mic array, a blue glow at the screen edge points towards whoever
+is speaking (drawn by board_host.py, straight from the array; set up by tapping
+the screen). While the array's mute button is on, the screen says so.
 
 Frames go to shared.SCREEN_FILE as Pango markup; board_host.py draws them.
 Thread-safe: speech, knob and the refresh timer call in from different threads.
@@ -26,7 +26,7 @@ from html import escape
 
 from board import KeywordBoard, Shown
 from keywords import keywords
-from shared import NO_MIC_ARRAY, SCREEN_FILE, read_mic_state, speaker_color, write_json
+from shared import NO_MIC_ARRAY, SCREEN_FILE, read_mic_state, write_json
 
 LEVELS = (1, 2, 3, 4, 6, 8)  # number of key words per knob step
 LIVE = len(LEVELS)  # the step above: full transcript
@@ -43,7 +43,6 @@ MAX_LINES = 3  # ... and number of lines (newest text wins)
 KEPT_LINES = 10  # transcript lines remembered
 KEYWORD_PAUSE = 0.4  # seconds between key word analyses (leaves CPU to speech recognition)
 
-SPEAKER_DOT = "●"
 MUTED_TEXT = "Microphone muted"
 
 
@@ -51,7 +50,6 @@ MUTED_TEXT = "Microphone muted"
 class _Line:
     text: str
     complete: bool
-    direction: int | None  # where its speaker sits
 
 
 class Display:
@@ -79,12 +77,10 @@ class Display:
         mic = read_mic_state()
         with self._lock:
             self._message, self._mic = "", mic
-            line = self._lines.get(line_id) or _Line(text, complete, mic.direction)
-            line.text, line.complete = text, complete
-            self._lines[line_id] = line
+            self._lines[line_id] = _Line(text, complete)
             for old in list(self._lines)[:-KEPT_LINES]:
                 del self._lines[old]
-            self._unanalyzed[line_id] = _Line(text, complete, line.direction)
+            self._unanalyzed[line_id] = _Line(text, complete)
             self._render(time.monotonic())
         self._new_text.set()
 
@@ -141,7 +137,7 @@ class Display:
                     print(f"   key words: {', '.join(k.text for k in found) or '-'}")
                 with self._lock:
                     now = time.monotonic()
-                    self._board.hear(line_id, found, now, line.direction)
+                    self._board.hear(line_id, found, now)
                     self._render(now)
 
     # --- output ---------------------------------------------------------------
@@ -172,15 +168,14 @@ class Display:
         rows = []
         for line in self._lines.values():
             gray = OLD_LINE_GRAY if line.complete else 0.0
-            for i, row in enumerate(textwrap.wrap(line.text, LINE_CHARS)):
-                rows.append(_marked(row, gray, line.direction if i == 0 else None))
+            rows += [_in_gray(row, gray) for row in textwrap.wrap(line.text, LINE_CHARS)]
         return "\n".join(rows[-MAX_LINES:])
 
 
 def _board_markup(words: list[Shown | None]) -> str:
     """Up to 3 words one per row, more in two columns. Slots keep their place."""
     columns = 1 if len(words) <= 3 else 2
-    cells = [_marked(w.text, _fade(w.age), w.direction) for w in words if w]
+    cells = [_in_gray(w.text, _fade(w.age)) for w in words if w]
     rows = ["    ".join(cells[i:i + columns]) for i in range(0, len(cells), columns)]
     return "\n".join(rows)
 
@@ -190,11 +185,7 @@ def _fade(age: float) -> float:
     return round(progress * FADE_STEPS) / FADE_STEPS * FADED_GRAY
 
 
-def _marked(text: str, gray: float, direction: int | None) -> str:
-    """Text in a gray level (0 = black), after a dot in its speaker's color if known."""
+def _in_gray(text: str, gray: float) -> str:
+    """Text in a gray level (0 = black)."""
     level = round(gray * 255)
-    markup = f"<span foreground='#{level:02x}{level:02x}{level:02x}'>{escape(text, quote=False)}</span>"
-    if direction is None:
-        return markup
-    dot = f"<span foreground='#{speaker_color(direction):06x}' size='smaller'>{SPEAKER_DOT}</span>"
-    return f"{dot} {markup}"
+    return f"<span foreground='#{level:02x}{level:02x}{level:02x}'>{escape(text, quote=False)}</span>"

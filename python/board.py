@@ -38,14 +38,12 @@ TRACKED_LINES = 20  # recent lines whose keywords are remembered (to count each 
 class Shown:
     text: str
     age: float  # seconds since it was last said
-    direction: int | None  # where its speaker sits (None: unknown)
 
 
 @dataclass
 class _Candidate:
     text: str
     weight: float
-    direction: int | None
     said: list[float]  # when it was said, oldest first
 
     @property
@@ -70,13 +68,11 @@ class KeywordBoard:
         self._lines: dict[int, Counter] = {}  # keyword counts per recent line, oldest first
         self._slots: list[_Slot | None] = [None] * size
 
-    def hear(self, line_id: int, found: list[Keyword], now: float,
-             direction: int | None = None) -> None:
+    def hear(self, line_id: int, found: list[Keyword], now: float) -> None:
         """The text of a speech line changed; `found` are all its keywords now.
 
         Lines are revised while they are spoken: keywords seen before in the same
         line are not counted again, keywords revised away are taken back.
-        `direction`: where the speaker sits, if known; a word belongs to whoever said it last.
         """
         before = self._lines.get(line_id, Counter())
         current = Counter(keyword.key for keyword in found)
@@ -89,7 +85,7 @@ class KeywordBoard:
             if key in self._candidates:
                 self._candidates[key].text = latest[key].text
             for _ in range(count - before[key]):
-                self._mention(latest[key], now, direction)
+                self._mention(latest[key], now)
 
         self._lines[line_id] = current
         for old in list(self._lines)[:-TRACKED_LINES]:
@@ -109,7 +105,7 @@ class KeywordBoard:
 
     def _shown(self, key: str, now: float) -> Shown:
         candidate = self._candidates[key]
-        return Shown(candidate.text, now - candidate.said_at, candidate.direction)
+        return Shown(candidate.text, now - candidate.said_at)
 
     def _arrange(self, now: float) -> None:
         shown = {slot.key for slot in self._slots if slot}
@@ -136,13 +132,12 @@ class KeywordBoard:
     def _strength(self, key: str, now: float) -> float:
         return self._candidates[key].strength(now, HALF_LIFE_PER_SLOT * len(self._slots))
 
-    def _mention(self, keyword: Keyword, now: float, direction: int | None) -> None:
+    def _mention(self, keyword: Keyword, now: float) -> None:
         candidate = self._candidates.get(keyword.key)
         if candidate is None:
-            self._candidates[keyword.key] = _Candidate(keyword.text, keyword.weight, direction, [now])
+            self._candidates[keyword.key] = _Candidate(keyword.text, keyword.weight, [now])
             return
         candidate.weight = max(candidate.weight, keyword.weight)
-        candidate.direction = direction
         candidate.said = [t for t in candidate.said if now - t < ECHO_HORIZON] + [now]
 
     def _take_back(self, key: str) -> None:

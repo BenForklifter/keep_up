@@ -9,7 +9,8 @@ microphone, microphone.py) feeds Moonshine (offline speech recognition on the
 board's CPU, speech.py). The keyword board (board.py) keeps the N most important
 words of the talk; the Modulino Knob on the sketch side picks N, or the full live
 transcript (display.py). Turning sends "knob_turned", pressing "knob_pressed"
-over the Bridge. Who said a word comes from the mic array via board_host.py.
+over the Bridge. A blue glow at the screen edge points towards whoever is speaking
+(mic array, board_host.py).
 The bottom-right corner shows the estimated power and carbon footprint (sci.py).
 """
 

@@ -7,8 +7,9 @@ from most, recent samples counting more. It then
 
 - lights the LED ring towards the speaker, in the color of their seat
   (the array's own direction-of-arrival LED effect, recolored per speaker),
-- reports direction and mute button to the app (shared.MicState), which marks
-  each word with that color.
+- reports direction and mute button (shared.MicState) to board_host.py
+  (SpeakerFollower.state), which puts a blue glow at the screen edge towards the
+  speaker, and to the app, which says on screen when the array is muted.
 
 Unplugging and replugging the array is fine: it is looked for every few seconds.
 """
@@ -36,6 +37,11 @@ class SpeakerFollower:
         self._written_at = 0.0
         self._led_direction = None
 
+    @property
+    def state(self) -> MicState:
+        """The latest state (NO_MIC_ARRAY while none is plugged in); any thread may read it."""
+        return self._state
+
     def run_forever(self) -> None:
         reported = None
         while True:
@@ -55,6 +61,7 @@ class SpeakerFollower:
             finally:
                 self._array = None
                 self._led_direction = None
+                self._state = NO_MIC_ARRAY
                 write_mic_state(NO_MIC_ARRAY)
             time.sleep(RETRY_SECONDS)
 

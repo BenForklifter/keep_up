@@ -18,8 +18,9 @@ BOARD="${BOARD:-arduino@192.168.1.216}"
 APP="keep_up"
 DIR="/home/arduino/ArduinoApps/$APP"
 # Not in git, kept on the board across deploys: the speech models, which the app
-# downloads on its first start (see python/speech.py).
-KEEP="models"
+# downloads on its first start (see python/speech.py), and the screen settings,
+# made on the screen itself (see python/screen.py).
+KEEP="models .board/settings.json"
 UDEV_RULE='SUBSYSTEM=="usb", ATTRS{idVendor}=="2886", ATTRS{idProduct}=="001a", MODE="0666"'
 
 cd "$(dirname "$0")"

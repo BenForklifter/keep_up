@@ -5,8 +5,11 @@ Both run from this folder and talk through small JSON files in .board/:
     screen.json  app -> board: {"markup", "status", "info"}, the frame to draw
     mic.json     board -> app: {"direction", "muted", "time"}, the mic array state
 
+and settings.json, board_host.py's own: how the glow towards the speaker is set
+up on the screen (screen.py). deploy.sh keeps it across deploys.
+
 Speakers are told apart by where they sit: each direction around the table has
-its own color, used both for the LED on the mic array and the dot before a word.
+its own color for the LED on the mic array that lights up towards them.
 """
 
 import colorsys
@@ -19,6 +22,7 @@ from typing import NamedTuple
 BOARD_DIR = Path(__file__).resolve().parents[1] / ".board"
 SCREEN_FILE = BOARD_DIR / "screen.json"
 MIC_FILE = BOARD_DIR / "mic.json"
+SETTINGS_FILE = BOARD_DIR / "settings.json"
 MIC_STALE_SECONDS = 3.0  # older mic state means board_host.py stopped updating it
 
 
