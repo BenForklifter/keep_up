@@ -1,0 +1,24 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "UNO Q: deploy & run",
+      "type": "shell",
+      "command": "./deploy.sh",
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "UNO Q: logs",
+      "type": "shell",
+      "command": "./deploy.sh logs",
+      "problemMatcher": []
+    },
+    {
+      "label": "UNO Q: stop",
+      "type": "shell",
+      "command": "./deploy.sh stop",
+      "problemMatcher": []
+    }
+  ]
+}

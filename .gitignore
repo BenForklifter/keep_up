@@ -32,7 +32,8 @@ secrets*
 *.sqlite3
 
 # Editors and OS
-.vscode/
+.vscode/*
+!.vscode/tasks.json
 .idea/
 *.swp
 *~
