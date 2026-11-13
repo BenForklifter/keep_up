@@ -16,7 +16,7 @@ import time
 from arduino.app_utils import App, Bridge
 
 from display import Display
-from microphone import TableMic, test_audio_waiting
+from microphone import TableMic
 from presence import Presence
 from shared import read_names, touched_at
 from speech import SpeechToText
@@ -86,8 +86,6 @@ def refresh_forever() -> None:
         if (now_touched := touched_at()) != touched:
             touched = now_touched
             presence.seen("screen tapped")
-        if not presence.awake and test_audio_waiting():
-            presence.seen("test audio")  # played instead of the microphone
         presence.check()
         if not presence.awake:
             continue  # nothing moves on the dark screen

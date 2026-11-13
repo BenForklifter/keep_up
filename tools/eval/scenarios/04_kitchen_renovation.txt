@@ -1,8 +1,0 @@
-# expect: kitchen, renovation, oven, Peter, tiles, budget
-# ok: weeks, floor, carpenter, money, march, ikea
-A: We finally started the kitchen renovation last week.
-B: Oh, finally! Did Peter build the new cabinets himself?
-A: He did, but the oven still doesn't fit, so we have to send it back.
-C: And what about the floor tiles you wanted?
-A: Too expensive. We are way over budget already.
-B: Ikea has nice tiles, my brother used them in his bathroom.

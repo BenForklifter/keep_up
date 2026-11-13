@@ -5,7 +5,8 @@ and the text of the current line grows word by word. It writes punctuation and
 capitals itself, which spaCy relies on to find names. A line ends at a pause.
 
 The model (Banafo Kroko ASR community model, CC BY-SA 4.0, 57 MB) is downloaded
-on the first start. docs/speech-recognition.md explains why it was chosen.
+on the first start. Of the streaming models tested with restaurant noise, it was
+the most accurate, at the lowest CPU load.
 
     stt = SpeechToText(on_line)           # on_line(line_id, text, complete)
     stt.listen_for(["Mary", "Grandma"])   # names that should come out right

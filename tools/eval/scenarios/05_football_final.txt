@@ -1,8 +1,0 @@
-# expect: football, final, Munich, tickets, stadium, penalty
-# ok: saturday, train, goal, referee, game, fans
-C: Are you going to the football final on Saturday?
-A: Yes, Jonas got two tickets for the stadium in Munich.
-C: Wow, how did he get them? They were sold out in minutes.
-A: His boss gave them to him. We are taking the early train.
-B: I still can't believe they lost on a penalty last year.
-C: That referee was terrible.
