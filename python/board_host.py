@@ -31,7 +31,8 @@ def show_frames_forever(screen: Screen) -> None:
             last = changed
             frame = read_json(SCREEN_FILE)
             if frame:
-                screen.show(frame.get("markup", ""), frame.get("status", ""), markup=True)
+                screen.show(frame.get("markup", ""), frame.get("status", ""), markup=True,
+                            info=frame.get("info", ""))
         time.sleep(POLL_SECONDS)
 
 

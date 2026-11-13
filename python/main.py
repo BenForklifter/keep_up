@@ -10,6 +10,7 @@ board's CPU, speech.py). The keyword board (board.py) keeps the N most important
 words of the talk; the Modulino Knob on the sketch side picks N, or the full live
 transcript (display.py). Turning sends "knob_turned", pressing "knob_pressed"
 over the Bridge. Who said a word comes from the mic array via board_host.py.
+The bottom-right corner shows the estimated power and carbon footprint (sci.py).
 """
 
 import threading
@@ -19,9 +20,12 @@ from arduino.app_utils import App, Bridge
 
 from display import Display
 from microphone import TableMic
+from sci import CarbonMeter
 from speech import SpeechToText
 
 REFRESH_SECONDS = 0.25  # how often the board is re-arranged (fading, dwell times)
+SCI_SAMPLE_SECONDS = 5.0  # how often power is estimated and the corner updated
+SCI_LOG_SECONDS = 60.0  # how often the carbon figures go to the app log
 
 display = Display()
 
@@ -48,7 +52,19 @@ def refresh_forever():
 
 Bridge.provide("knob_turned", lambda steps: display.turn(int(steps)))
 Bridge.provide("knob_pressed", display.press)
+def measure_forever():
+    meter, last_log = CarbonMeter(), time.monotonic()
+    while True:
+        time.sleep(SCI_SAMPLE_SECONDS)
+        meter.sample()
+        display.set_info(meter.label())
+        if time.monotonic() - last_log >= SCI_LOG_SECONDS:
+            last_log = time.monotonic()
+            print(meter.log_line())
+
+
 threading.Thread(target=refresh_forever, daemon=True).start()
+threading.Thread(target=measure_forever, daemon=True).start()
 
 display.message("Loading speech model ...")
 try:

@@ -2,7 +2,7 @@
 
 Both run from this folder and talk through small JSON files in .board/:
 
-    screen.json  app -> board: {"markup", "status"}, the frame to draw
+    screen.json  app -> board: {"markup", "status", "info"}, the frame to draw
     mic.json     board -> app: {"direction", "muted", "time"}, the mic array state
 
 Speakers are told apart by where they sit: each direction around the table has

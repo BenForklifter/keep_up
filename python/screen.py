@@ -5,6 +5,7 @@
     screen = Screen()        # opens a white fullscreen window
     screen.show("Apfel")     # draws the text as large as possible (black, centered)
     screen.show("Apfel", status="3")  # ... plus a small label in the bottom-left corner
+    screen.show("Apfel", info="2.4 W")  # ... and/or one in the bottom-right corner
     screen.show("<span foreground='#999'>alt</span> neu", markup=True)  # Pango markup
     screen.close()           # closes the window
 
@@ -31,6 +32,7 @@ from gi.repository import Gdk, GLib, Gtk, Pango, PangoCairo  # noqa: E402
 FONT = "DejaVu Sans Bold"
 MARGIN = 0.05      # free border on each side, fraction of screen size
 STATUS_HEIGHT = 0.06  # bottom-left status label, fraction of screen height
+INFO_HEIGHT = 0.035  # bottom-right info label (smaller: it is longer)
 STATUS_GRAY = 0.55
 GROW_AT = 1.3      # grow the text only when it could get this much bigger
 _REF_SIZE = 100    # font size used for measuring before scaling
@@ -40,6 +42,7 @@ class Screen:
     def __init__(self):
         self._text = ""
         self._status = ""
+        self._info = ""
         self._markup = False
         self._scale = 0.0
         self._ready = threading.Event()
@@ -49,12 +52,12 @@ class Screen:
         if self._error:
             raise RuntimeError(self._error)
 
-    def show(self, text: str, status: str = "", markup: bool = False) -> None:
-        """Display text (and a small status label), replacing whatever is shown.
+    def show(self, text: str, status: str = "", markup: bool = False, info: str = "") -> None:
+        """Display text (and small status / info labels), replacing whatever is shown.
 
         With markup=True, text is Pango markup (colors, <b>, ...).
         """
-        GLib.idle_add(self._set_text, str(text), str(status), markup)
+        GLib.idle_add(self._set_text, str(text), str(status), markup, str(info))
 
     def close(self) -> None:
         GLib.idle_add(Gtk.main_quit)
@@ -81,8 +84,8 @@ class Screen:
         Gtk.main()
         self._window.destroy()
 
-    def _set_text(self, text, status, markup):
-        self._text, self._status, self._markup = text, status, markup
+    def _set_text(self, text, status, markup, info):
+        self._text, self._status, self._markup, self._info = text, status, markup, info
         self._area.queue_draw()
         return False  # run once
 
@@ -103,6 +106,7 @@ class Screen:
         self._draw_text(cr, width / 2, text_height / 2,
                         width * (1 - 2 * MARGIN), text_height - 2 * height * MARGIN)
         self._draw_status(cr, height * MARGIN, height - height * MARGIN, status_height)
+        self._draw_info(cr, width - height * MARGIN, height - height * MARGIN, height * INFO_HEIGHT)
 
     def _draw_text(self, cr, center_x, center_y, max_width, max_height):
         """The text, as large as fits into the box, centered on (center_x, center_y)."""
@@ -132,6 +136,21 @@ class Screen:
         cr.translate(left, bottom)
         cr.scale(scale, scale)
         cr.translate(-ink.x, -(ink.y + ink.height))
+        cr.set_source_rgb(STATUS_GRAY, STATUS_GRAY, STATUS_GRAY)
+        PangoCairo.show_layout(cr, layout)
+        cr.restore()
+
+    def _draw_info(self, cr, right, bottom, size):
+        """Small gray label whose bottom-right corner is at (right, bottom)."""
+        layout = _layout(cr, self._info, markup=False)
+        ink, _ = layout.get_pixel_extents()
+        if ink.height == 0:
+            return
+        scale = size / ink.height
+        cr.save()
+        cr.translate(right, bottom)
+        cr.scale(scale, scale)
+        cr.translate(-(ink.x + ink.width), -(ink.y + ink.height))
         cr.set_source_rgb(STATUS_GRAY, STATUS_GRAY, STATUS_GRAY)
         PangoCairo.show_layout(cr, layout)
         cr.restore()

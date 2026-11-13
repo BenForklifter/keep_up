@@ -2,7 +2,8 @@
 
 The knob picks a level: the 1, 2, 3, 4, 6 or 8 key words of the conversation
 (the keyword board, see board.py) or, at the top, LIVE: the running transcript.
-The level is shown small in the bottom-left corner.
+The level is shown small in the bottom-left corner, the energy and carbon
+figures (sci.py) in the bottom-right one.
 
 Fresh words are black and turn gray as they age, so a glance tells what was
 just said and what is the topic from before. In the transcript the line being
@@ -59,6 +60,7 @@ class Display:
         self._lines: dict[int, _Line] = {}  # transcript, oldest first
         self._mic = NO_MIC_ARRAY  # state of the reSpeaker array, if any
         self._message = ""  # status text instead of speech ("Listening ...")
+        self._info = ""  # bottom-right corner: energy / carbon figures
         self._frame = None  # last frame written
 
     # --- input ----------------------------------------------------------------
@@ -95,6 +97,12 @@ class Display:
             self._message = text
             self._render(time.monotonic())
 
+    def set_info(self, text: str) -> None:
+        """Small text for the bottom-right corner (energy / carbon figures)."""
+        with self._lock:
+            self._info = text
+            self._render(time.monotonic())
+
     def tick(self) -> None:
         """Call a few times a second: words fade and expire, mute button is checked."""
         mic = read_mic_state()
@@ -121,7 +129,7 @@ class Display:
         else:
             markup = _board_markup(self._board.words(now))
         status = "LIVE" if self._level == LIVE else str(LEVELS[self._level])
-        frame = {"markup": markup, "status": status}
+        frame = {"markup": markup, "status": status, "info": self._info}
         if frame != self._frame:
             self._frame = frame
             write_json(SCREEN_FILE, frame)
