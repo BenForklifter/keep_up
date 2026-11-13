@@ -1,0 +1,40 @@
+# ignore app cache folder
+.cache/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Sketch build output
+sketch/build/
+*.bin
+*.elf
+*.hex
+*.map
+
+# Secrets and local config
+.env
+.env.*
+*.pem
+*.key
+secrets*
+
+# Runtime data
+*.log
+*.db
+*.sqlite
+*.sqlite3
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
