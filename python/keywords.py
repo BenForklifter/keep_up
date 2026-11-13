@@ -52,8 +52,7 @@ RARITY_GAIN = 0.3
 # when rare (zipf below ~3.7).
 MIN_WEIGHT = 1.2
 # Single words English has (almost) never seen are nearly always misheard ("pung",
-# "bellad"), and their rarity would make them look important. tools/eval: top-5 key
-# words that matter 75 -> 81 % (Kroko), 62 -> 65 % (Moonshine), no real ones lost.
+# "bellad"), and their rarity would make them look important.
 KNOWN_ZIPF = 1.0
 
 # Nouns without content, and spoken fillers spaCy's stop list doesn't know

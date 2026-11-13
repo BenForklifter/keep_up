@@ -5,7 +5,7 @@ who are deaf or hard of hearing lose the thread. A glance at the display shows
 the topic and what was just said.
 
 The reSpeaker XVF3800 mic array in the middle of the table (or any USB
-microphone, microphone.py) feeds Moonshine (offline speech recognition on the
+microphone, microphone.py) feeds Kroko (offline speech recognition on the
 board's CPU, speech.py). The keyword board (board.py) keeps the N most important
 words of the talk; the Modulino Knob on the sketch side picks N, or the full live
 transcript (display.py). Turning sends "knob_turned", pressing "knob_pressed"
@@ -33,15 +33,7 @@ from microphone import TableMic, test_audio_waiting
 from presence import Presence
 from sci import CarbonMeter
 from shared import read_names, touched_at
-
-# Speech recognizer: "moonshine" (speech.py) or "kroko" (speech_kroko.py). On a laptop
-# benchmark Kroko was clearly more accurate and lighter (tools/eval/results/); switch
-# once confirmed on the board.
-ASR = "kroko"
-if ASR == "kroko":
-    from speech_kroko import SpeechToText
-else:
-    from speech import SpeechToText
+from speech import SpeechToText
 
 REFRESH_SECONDS = 0.25  # how often the board is re-arranged (fading, dwell times)
 SCI_SAMPLE_SECONDS = 5.0  # how often power is estimated and the corner updated
