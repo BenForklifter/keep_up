@@ -43,5 +43,5 @@ Thumbs.db
 # Speech models, downloaded by the app on its first start (python/speech.py)
 models/
 
-# Live text handed from the app container to the screen process (runtime only)
-.screen/
+# Files the app container and board_host.py exchange (runtime only)
+.board/

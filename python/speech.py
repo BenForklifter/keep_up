@@ -1,13 +1,17 @@
 """Offline streaming speech recognition with Moonshine v2 on the board's CPU.
 
 Moonshine v2 is built for live captions on small devices: its encoder streams
-(words appear while someone is still talking) and a built-in voice activity
-detector cuts the talk into lines, one per utterance. The Small model makes half
-the errors of the previous Whistle model on meeting-style conversation
-(AMI: 12.5 % vs 26 % word error rate).
+and lines are decoded while they are still spoken (words appear during the
+sentence, not after it), and a built-in voice activity detector cuts the talk
+into lines, one per utterance.
+
+Speed matters more than the last bit of accuracy here: every caption update
+re-decodes the current line, and Moonshine waits for one update to finish before
+starting the next. So the model is the Tiny one and lines are kept short. Word
+error rates on meeting talk (AMI): Tiny 19 %, Small 12.5 %, the earlier Whistle 26 %.
 
     stt = SpeechToText(on_line=print_line)   # loads (first run: downloads) the model
-    stt.run(mic)                             # blocks while the microphone delivers audio
+    stt.run(mic.blocks())                    # runs while the microphone delivers audio
 
 on_line(line_id, text, complete) is called whenever the text of a line changes;
 a line keeps its id while it is revised and stops changing once complete.
@@ -15,8 +19,8 @@ a line keeps its id while it is revised and stops changing once complete.
 
 import threading
 from collections import deque
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Callable
 
 import numpy as np
 from moonshine_voice import Error as RecognitionError
@@ -28,14 +32,18 @@ from moonshine_voice import (
     get_model_for_language,
 )
 
-# Small: best accuracy the board's 4 Cortex-A53 cores keep up with in real time.
-# If captions lag far behind, use ModelArch.TINY_STREAMING (faster, ~1.5x the errors).
-MODEL_ARCH = ModelArch.SMALL_STREAMING
+# Tiny (34 M parameters) keeps up on the board's 4 Cortex-A53 cores with frequent
+# updates; SMALL_STREAMING (123 M) is more accurate but updates only every few seconds.
+MODEL_ARCH = ModelArch.TINY_STREAMING
 # Downloaded on the first start; deploy.sh keeps this folder on the board.
 MODEL_DIR = Path(__file__).resolve().parents[1] / "models"
 RATE = 16000
 UPDATE_INTERVAL = 0.3  # seconds between caption updates (Moonshine stretches it when busy)
 MAX_BACKLOG = 3.0  # seconds; if recognition falls further behind, the oldest audio is dropped
+OPTIONS = {
+    "transcription_interval": UPDATE_INTERVAL,  # library default 0.5 s would override ours
+    "vad_max_segment_duration": 6.0,  # cut lines after 6 s (default 15): cheaper updates
+}
 
 LineCallback = Callable[[int, str, bool], None]
 
@@ -44,13 +52,14 @@ class SpeechToText:
     def __init__(self, on_line: LineCallback):
         model_path, model_arch = get_model_for_language(
             "en", MODEL_ARCH, cache_root=MODEL_DIR)
-        self._transcriber = Transcriber(model_path=model_path, model_arch=model_arch)
+        self._transcriber = Transcriber(model_path=model_path, model_arch=model_arch,
+                                        options=OPTIONS)
         self._on_line = on_line
 
-    def run(self, mic) -> None:
-        """Transcribe the (started) microphone until its stream ends or fails."""
+    def run(self, blocks: Iterator[np.ndarray]) -> None:
+        """Transcribe mono int16 16 kHz sample blocks until they end or fail."""
         audio = _AudioBuffer(int(MAX_BACKLOG * RATE))
-        threading.Thread(target=audio.fill_from, args=(mic,), daemon=True).start()
+        threading.Thread(target=audio.fill_from, args=(blocks,), daemon=True).start()
 
         stream = self._transcriber.create_stream(update_interval=UPDATE_INTERVAL)
         stream.add_listener(self._on_event)
@@ -68,6 +77,9 @@ class SpeechToText:
         if (isinstance(event, LineCompleted) or
                 isinstance(event, LineTextChanged) and not event.line.is_complete):
             line = event.line
+            if line.is_complete:
+                print(f"📝 {line.text.strip()}  "
+                      f"[{line.duration:.1f}s of speech, last update took {line.last_transcription_latency_ms} ms]")
             self._on_line(line.line_id, line.text.strip(), line.is_complete)
         elif isinstance(event, RecognitionError):
             print(f"Speech recognition error: {event.error!r}")
@@ -88,12 +100,12 @@ class _AudioBuffer:
         self._closed = False
         self._ready = threading.Condition()
 
-    def fill_from(self, mic) -> None:
+    def fill_from(self, blocks: Iterator[np.ndarray]) -> None:
         try:
-            for block in mic.stream():
+            for block in blocks:
                 if self._closed:
                     return
-                self._put(np.asarray(block, dtype=np.int16).reshape(-1))
+                self._put(block)
         except Exception as e:
             print(f"Microphone error: {e!r}")
         finally:

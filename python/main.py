@@ -4,20 +4,21 @@ Against Dinner Table Syndrome: at a table where everyone talks at once, people
 who are deaf or hard of hearing lose the thread. A glance at the display shows
 the topic and what was just said.
 
-A USB microphone on the board feeds Moonshine (offline speech recognition on the
+The reSpeaker XVF3800 mic array in the middle of the table (or any USB
+microphone, microphone.py) feeds Moonshine (offline speech recognition on the
 board's CPU, speech.py). The keyword board (board.py) keeps the N most important
 words of the talk; the Modulino Knob on the sketch side picks N, or the full live
 transcript (display.py). Turning sends "knob_turned", pressing "knob_pressed"
-over the Bridge.
+over the Bridge. Who said a word comes from the mic array via board_host.py.
 """
 
 import threading
 import time
 
-from arduino.app_peripherals.microphone import Microphone
 from arduino.app_utils import App, Bridge
 
 from display import Display
+from microphone import TableMic
 from speech import SpeechToText
 
 REFRESH_SECONDS = 0.25  # how often the board is re-arranged (fading, dwell times)
@@ -25,20 +26,17 @@ REFRESH_SECONDS = 0.25  # how often the board is re-arranged (fading, dwell time
 display = Display()
 
 
-def open_mic():
+def open_mic() -> TableMic | None:
     try:
-        mic = Microphone()  # defaults = what the model wants: 16 kHz, mono, int16
-        mic.start()
+        mic = TableMic()
         print(f"Microphone: {mic.name}")
         return mic
     except Exception as e:
-        print(f"No microphone ({e})")
+        print(f"No microphone ({e!r})")
         return None
 
 
 def on_line(line_id: int, text: str, complete: bool) -> None:
-    if complete and text:
-        print(f"📝 {text}")
     display.heard(line_id, text, complete)
 
 
@@ -67,7 +65,7 @@ def loop():
         time.sleep(60)
         return
     try:
-        stt.run(mic)  # returns only when the microphone stream ends
+        stt.run(mic.blocks())  # returns only when the microphone stream ends
     except Exception as e:
         print(f"Speech recognition stopped: {e!r}")
     print("Restarting speech recognition")

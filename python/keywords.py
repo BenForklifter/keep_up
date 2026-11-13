@@ -24,15 +24,18 @@ from wordfreq import zipf_frequency
 class Keyword:
     key: str  # the same thing across mentions: lowercase lemma ("dogs" -> "dog")
     text: str  # as it was said ("dogs", "New York")
-    weight: float  # how much it tells about the conversation, ~1 ... 9
+    weight: float  # how much it tells about the conversation, ~2 ... 7
 
 
 # The parser is not needed (no syntax trees), skipping it saves most of the CPU.
 NLP = spacy.load("en_core_web_sm", exclude=["parser"])
 
 # Zipf scale: log10 of occurrences per billion words. "the" ~7.7, "telescope" ~3.6,
-# unknown words 0. Rarity = how far below MAX_ZIPF a word is.
+# unknown words 0. Rarity = how far below MAX_ZIPF a word is, at most MAX_RARITY:
+# beyond "rare" (zipf 2, e.g. "telescope" is 3.6) words are not more important,
+# and words wordfreq has never seen are often misheard ones.
 MAX_ZIPF = 7.0
+MAX_RARITY = 5.0
 MIN_WEIGHT = 1.8  # weaker words are never shown
 
 POS_WEIGHT = {"NOUN": 1.0, "PROPN": 1.0, "VERB": 0.6, "ADJ": 0.6}
@@ -76,4 +79,4 @@ def _word(token) -> Keyword:
 
 
 def _rarity(word: str) -> float:
-    return max(0.0, MAX_ZIPF - zipf_frequency(word, "en"))
+    return min(max(0.0, MAX_ZIPF - zipf_frequency(word, "en")), MAX_RARITY)
