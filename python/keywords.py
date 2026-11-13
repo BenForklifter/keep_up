@@ -1,85 +1,79 @@
-"""Pick the most important words of a piece of English speech.
+"""Find the words that carry a conversation: the things, names, places and plans.
 
-A word matters when it is rare in everyday English: "telescope" tells you more
-than "really". Rarity comes from wordfreq, word frequencies measured over
-billions of words of text and subtitles (in effect an IDF score). On top of that:
-names (capitalised mid-sentence) and words repeated in the text get a boost, and
-among equal words the newer one wins. Cheap enough to run every second on the board.
+Two signals decide how much a word is worth:
 
-    important_words("We pointed the new telescope at Jupiter.", 2)
-    -> ["telescope", "Jupiter"]
+- What it is. spaCy (en_core_web_sm) tags parts of speech and finds named
+  entities. Nouns and names carry the topic, verbs and adjectives sometimes do
+  ("divorced", "pregnant"), words like "honestly" or "went" never do. Names are
+  kept whole ("New York", "Aunt Mary").
+- How informative it is. A word is worth more the rarer it is in everyday
+  English (wordfreq: frequencies measured over billions of words, in effect an
+  IDF score). "telescope" says more than "thing".
+
+    [k.text for k in keywords("We flew to New York with my sister's dogs.")]
+    -> ["New York", "sister", "dogs"]   (each with key and weight)
 """
 
-import re
+from dataclasses import dataclass
 
+import spacy
 from wordfreq import zipf_frequency
+
+
+@dataclass(frozen=True)
+class Keyword:
+    key: str  # the same thing across mentions: lowercase lemma ("dogs" -> "dog")
+    text: str  # as it was said ("dogs", "New York")
+    weight: float  # how much it tells about the conversation, ~1 ... 9
+
+
+# The parser is not needed (no syntax trees), skipping it saves most of the CPU.
+NLP = spacy.load("en_core_web_sm", exclude=["parser"])
 
 # Zipf scale: log10 of occurrences per billion words. "the" ~7.7, "telescope" ~3.6,
 # unknown words 0. Rarity = how far below MAX_ZIPF a word is.
 MAX_ZIPF = 7.0
-MIN_RARITY = 1.5  # words more common than this (zipf > 5.5) are never "important"
-NAME_BONUS = 1.5
-REPEAT_BONUS = 0.3  # per extra occurrence, relative
-RECENCY_BONUS = 0.5  # newest word gets this much, the oldest nothing
+MIN_WEIGHT = 1.8  # weaker words are never shown
 
-TOKEN = re.compile(r"[A-Za-z0-9]+(?:['’][A-Za-z]+)*")
-SENTENCE_END = re.compile(r"[.!?]\s*$")
+POS_WEIGHT = {"NOUN": 1.0, "PROPN": 1.0, "VERB": 0.6, "ADJ": 0.6}
+ENTITY_BONUS = {
+    "PERSON": 2.0, "GPE": 2.0, "LOC": 2.0, "FAC": 2.0, "ORG": 1.5, "NORP": 1.5,
+    "PRODUCT": 1.5, "EVENT": 1.5, "WORK_OF_ART": 1.5, "LANGUAGE": 1.5, "LAW": 1.0,
+    "DATE": 1.0, "TIME": 1.0, "MONEY": 1.0,  # "next Tuesday", "at eight", "fifty bucks"
+}
 
-# Function words and spoken fillers. Rarity already ranks most of them low; this
-# list catches the ones that are rare in writing but common in speech.
-STOPWORDS = frozenset("""
-    a about above after again against all also am an and any are aren't as at be
-    because been before being below between both but by can can't cannot could
-    couldn't did didn't do does doesn't doing don't down during each few for from
-    further had hadn't has hasn't have haven't having he he'd he'll he's her here
-    here's hers herself him himself his how how's i i'd i'll i'm i've if in into is
-    isn't it it's its itself let's me more most mustn't my myself no nor not of off
-    on once only or other ought our ours ourselves out over own same shan't she
-    she'd she'll she's should shouldn't so some such than that that's the their
-    theirs them themselves then there there's these they they'd they'll they're
-    they've this those through to too under until up very was wasn't we we'd we'll
-    we're we've were weren't what what's when when's where where's which while who
-    who's whom why why's will with won't would wouldn't you you'd you'll you're
-    you've your yours yourself yourselves
-    actually anyway basically gonna gotta kinda like literally maybe mhm oh ok okay
-    right sorta stuff thing things uh uhm um wanna well yeah yep yes
-    get gets got going know knew mean means say said says see think thought want
+# Spoken fillers spaCy's stop list doesn't know.
+FILLERS = frozenset("""
+    actually anyway basically guy guys gonna gotta kind kinda lot literally
+    mhm oh ok okay right sort sorta stuff thing things uh uhm um wanna yeah yep
 """.split())
 
 
-def important_words(text: str, count: int) -> list[str]:
-    """The `count` most important distinct words of `text`, in spoken order."""
-    candidates = {}  # lowercase key -> (score, position, word as spoken)
-    tokens = list(TOKEN.finditer(text))
-    for position, match in enumerate(tokens):
-        word = match.group().replace("’", "'")
-        key = _key(word)
-        if key in STOPWORDS or len(key) < 2:
-            continue
-        rarity = MAX_ZIPF - zipf_frequency(key, "en")
-        if rarity < MIN_RARITY:
-            continue
-
-        score = rarity
-        if _is_name(word, text[: match.start()]):
-            score += NAME_BONUS
-        score += RECENCY_BONUS * position / max(1, len(tokens) - 1)
-
-        if key in candidates:
-            previous, _, _ = candidates[key]
-            score = max(score, previous) + REPEAT_BONUS * rarity
-        candidates[key] = (score, position, word)
-
-    best = sorted(candidates.values(), reverse=True)[:count]
-    return [word for _, _, word in sorted(best, key=lambda c: c[1])]
+def keywords(text: str) -> list[Keyword]:
+    """Every word of `text` worth showing, in spoken order (repeats included)."""
+    doc = NLP(text)
+    entities = [ent for ent in doc.ents if ent.label_ in ENTITY_BONUS]
+    in_entity = {token.i for ent in entities for token in ent}
+    found = [(ent.start, _entity(ent)) for ent in entities]
+    found += [(token.i, _word(token)) for token in doc
+              if token.i not in in_entity and token.pos_ in POS_WEIGHT
+              and not token.is_stop and token.lower_ not in FILLERS]
+    return [k for _, k in sorted(found, key=lambda f: f[0]) if k and k.weight >= MIN_WEIGHT]
 
 
-def _key(word: str) -> str:
-    key = word.lower()
-    return key[:-2] if key.endswith("'s") else key
+def _entity(ent) -> Keyword | None:
+    tokens = [t for t in ent if not (t.is_stop or t.is_punct)]  # "the United States"
+    if not tokens:
+        return None
+    phrase = ent.doc[tokens[0].i: tokens[-1].i + 1].text
+    weight = max(_rarity(t.lower_) for t in tokens) + ENTITY_BONUS[ent.label_]
+    return Keyword(phrase.lower(), phrase, weight)
 
 
-def _is_name(word: str, before: str) -> bool:
-    """Capitalised, but not just because it starts a sentence (or is "I")."""
-    starts_sentence = not before.strip() or SENTENCE_END.search(before)
-    return word[0].isupper() and not starts_sentence and word.lower() != "i"
+def _word(token) -> Keyword:
+    key = token.lemma_.lower() if token.pos_ != "PROPN" else token.lower_
+    return Keyword(key, token.text, POS_WEIGHT[token.pos_] * _rarity(token.lower_))
+
+
+def _rarity(word: str) -> float:
+    return max(0.0, MAX_ZIPF - zipf_frequency(word, "en"))

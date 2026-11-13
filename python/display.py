@@ -1,12 +1,16 @@
-"""What the monitor shows: the live transcript or just its most important words.
+"""What the monitor on the table shows.
 
-The knob picks a level: show the 1, 2, 3, ... most important words of the last
-few seconds (refreshed every second), or at the top level the full live transcript.
+The knob picks a level: the 1, 2, 3, 4, 6 or 8 key words of the conversation
+(the keyword board, see board.py) or, at the top, LIVE: the running transcript.
 The level is shown small in the bottom-left corner.
 
-The frame goes to .screen/text as JSON {"text", "status"}; python/screen_host.py
-(running on the board itself) draws it. Thread-safe: captions, knob events and
-the refresh timer all arrive on different threads.
+Fresh words are black and turn gray as they age, so a glance tells what was
+just said and what is the topic from before. In the transcript the line being
+spoken is black, earlier lines gray.
+
+Frames go to .screen/text as JSON {"markup", "status"} (Pango markup);
+python/screen_host.py, running on the board itself, draws them. Thread-safe:
+speech, knob and the refresh timer call in from different threads.
 """
 
 import json
@@ -14,32 +18,50 @@ import os
 import textwrap
 import threading
 import time
-from collections import deque
+from html import escape
 from pathlib import Path
 
-from keywords import important_words
+from board import KeywordBoard, Shown
+from keywords import keywords
 
 SCREEN_FILE = Path(__file__).resolve().parents[1] / ".screen/text"
-WORD_COUNTS = (1, 2, 3, 4, 6, 8)  # knob levels below LIVE
-LIVE = len(WORD_COUNTS)  # top level: full transcript
-KEYWORD_WINDOW = 8.0  # seconds of speech the important words are picked from
-LINE_CHARS = 24  # live transcript: characters per line ...
+LEVELS = (1, 2, 3, 4, 6, 8)  # number of key words per knob step
+LIVE = len(LEVELS)  # the step above: full transcript
+START_LEVEL = LEVELS.index(3)
+
+FRESH_SECONDS = 4.0  # words this recent are black ...
+FADED_SECONDS = 40.0  # ... and fade to FADED_GRAY over this time
+FADED_GRAY = 0.6  # 0 = black, 1 = white
+FADE_STEPS = 8  # gray levels used (fewer = fewer redraws)
+OLD_LINE_GRAY = 0.55
+
+LINE_CHARS = 24  # transcript: characters per line ...
 MAX_LINES = 3  # ... and number of lines (newest text wins)
-KEYWORDS_PER_LINE = 3
-TRANSCRIPT_CHARS = 500
+KEPT_LINES = 10  # transcript lines remembered
 
 
 class Display:
     def __init__(self):
         self._lock = threading.Lock()
-        self._level = LIVE
-        self._message = ""  # status text instead of captions ("Listening ...")
-        self._transcript = ""  # confirmed words, newest at the end
-        self._recent = deque()  # (arrival time, confirmed piece) inside KEYWORD_WINDOW
-        self._pending = ""  # tentative tail, may still change
-        self._keywords = ""  # last important words shown (kept through silence)
+        self._level = START_LEVEL
+        self._board = KeywordBoard(LEVELS[START_LEVEL])
+        self._lines: dict[int, tuple[str, bool]] = {}  # line id -> (text, complete), oldest first
+        self._message = ""  # status text instead of speech ("Listening ...")
+        self._frame = None  # last frame written
 
     # --- input ----------------------------------------------------------------
+
+    def heard(self, line_id: int, text: str, complete: bool) -> None:
+        """A line of speech changed (see speech.SpeechToText)."""
+        found = keywords(text)  # the slow part, done outside the lock
+        with self._lock:
+            now = time.monotonic()
+            self._message = ""
+            self._lines[line_id] = (text, complete)
+            for old in list(self._lines)[:-KEPT_LINES]:
+                del self._lines[old]
+            self._board.hear(line_id, found, now)
+            self._render(now)
 
     def turn(self, steps: int) -> None:
         """Knob turned: change the level, clamped to 1 word ... LIVE."""
@@ -54,67 +76,59 @@ class Display:
     def message(self, text: str) -> None:
         with self._lock:
             self._message = text
-            self._render()
-
-    def caption(self, confirmed: str, pending: str) -> None:
-        """New ASR event: `confirmed` words to append, `pending` replaces the tail."""
-        with self._lock:
-            self._message = ""
-            if confirmed.strip():
-                self._transcript = _join(self._transcript, confirmed)[-TRANSCRIPT_CHARS:]
-                self._recent.append((time.monotonic(), confirmed.strip()))
-            self._pending = pending.strip()
-            if self._level == LIVE:
-                self._render()
+            self._render(time.monotonic())
 
     def tick(self) -> None:
-        """Call about once a second: refreshes the important words."""
+        """Call a few times a second: lets words fade and expire on the board."""
         with self._lock:
-            if self._level != LIVE and self._update_keywords():
-                self._render()
+            self._render(time.monotonic())
 
     # --- output ---------------------------------------------------------------
 
     def _set_level(self, level: int) -> None:
         self._level = min(max(level, 0), LIVE)
-        self._update_keywords()
-        self._render()
+        now = time.monotonic()
+        if self._level != LIVE:
+            self._board.resize(LEVELS[self._level], now)
+        self._render(now)
 
-    def _update_keywords(self) -> bool:
-        """Re-pick the important words of the last KEYWORD_WINDOW seconds.
-
-        Returns whether they changed. In silence the last ones stay on screen.
-        """
-        if self._level == LIVE:
-            return False
-        while self._recent and self._recent[0][0] < time.monotonic() - KEYWORD_WINDOW:
-            self._recent.popleft()
-        text = " ".join([piece for _, piece in self._recent] + [self._pending])
-        words = important_words(text, WORD_COUNTS[self._level])
-        if not words:
-            return False
-        lines = [" ".join(words[i:i + KEYWORDS_PER_LINE])
-                 for i in range(0, len(words), KEYWORDS_PER_LINE)]
-        keywords = "\n".join(lines)
-        changed, self._keywords = keywords != self._keywords, keywords
-        return changed
-
-    def _render(self) -> None:
+    def _render(self, now: float) -> None:
         if self._message:
-            text = self._message
+            markup = escape(self._message, quote=False)
         elif self._level == LIVE:
-            lines = textwrap.wrap(_join(self._transcript, self._pending), LINE_CHARS)
-            text = "\n".join(lines[-MAX_LINES:])
+            markup = self._transcript_markup()
         else:
-            text = self._keywords
-        status = "LIVE" if self._level == LIVE else str(WORD_COUNTS[self._level])
-        _write_screen({"text": text, "status": status})
+            markup = _board_markup(self._board.words(now))
+        status = "LIVE" if self._level == LIVE else str(LEVELS[self._level])
+        frame = {"markup": markup, "status": status}
+        if frame != self._frame:
+            self._frame = frame
+            _write_screen(frame)
+
+    def _transcript_markup(self) -> str:
+        rows = [(row, complete)
+                for text, complete in self._lines.values()
+                for row in textwrap.wrap(text, LINE_CHARS)]
+        return "\n".join(_colored(row, OLD_LINE_GRAY if complete else 0.0)
+                         for row, complete in rows[-MAX_LINES:])
 
 
-def _join(a: str, b: str) -> str:
-    """Caption pieces come without spaces at the edges ("not" + "the")."""
-    a, b = a.rstrip(), b.strip()
-    return f"{a} {b}" if a and b else a or b
+def _board_markup(words: list[Shown | None]) -> str:
+    """Up to 3 words one per row, more in two columns. Slots keep their place."""
+    columns = 1 if len(words) <= 3 else 2
+    cells = [_colored(w.text, _fade(w.age)) for w in words if w]
+    rows = ["    ".join(cells[i:i + columns]) for i in range(0, len(cells), columns)]
+    return "\n".join(rows)
+
+
+def _fade(age: float) -> float:
+    progress = min(max((age - FRESH_SECONDS) / (FADED_SECONDS - FRESH_SECONDS), 0.0), 1.0)
+    return round(progress * FADE_STEPS) / FADE_STEPS * FADED_GRAY
+
+
+def _colored(text: str, gray: float) -> str:
+    level = round(gray * 255)
+    return f"<span foreground='#{level:02x}{level:02x}{level:02x}'>{escape(text, quote=False)}</span>"
 
 
 def _write_screen(frame: dict) -> None:

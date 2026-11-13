@@ -14,10 +14,9 @@ set -euo pipefail
 BOARD="${BOARD:-arduino@192.168.1.216}"
 APP="keep_up"
 DIR="/home/arduino/ArduinoApps/$APP"
-# Heavy brick files are not in git. On the board they are copied once from the
-# starter app and then kept across deploys.
-BRICK_SRC="/home/arduino/ArduinoApps/local-speech-to-text/bricks/local_asr"
-KEEP="bricks/local_asr/vendor bricks/local_asr/service/runtime bricks/local_asr/service/models/whistle.cact"
+# Not in git, kept on the board across deploys: the speech models, which the app
+# downloads on its first start (see python/speech.py).
+KEEP="models"
 
 cd "$(dirname "$0")"
 
@@ -32,15 +31,9 @@ set -e
 arduino-app-cli app stop '$DIR' </dev/null >/dev/null 2>&1 || true
 $STOP_SCREEN
 mkdir -p '$DIR' && cd '$DIR'
-# Remove old files (so deleted/renamed files disappear), keep App Lab's cache and brick binaries
+# Remove old files (so deleted/renamed files disappear), keep App Lab's cache and the models
 find . -mindepth 1 \\( -path ./.cache $PRUNE\\) -prune -o -type f -exec rm -f {} +
 tar -xzf -
-for p in $KEEP; do
-  [ -e "\$p" ] && continue
-  src="$BRICK_SRC/\${p#bricks/local_asr/}"
-  if [ -e "\$src" ]; then mkdir -p "\$(dirname "\$p")" && cp -r "\$src" "\$p" && echo ">> copied \$p from starter app"
-  else echo "!! missing \$p, no copy at \$src (get it from github.com/91volt/uno-q-speech-to-text)"; fi
-done
 echo '>> Starting screen on the monitor'
 mkdir -p .screen
 DISPLAY=:0 setsid nohup python3 '$DIR/python/screen_host.py' > .screen/host.log 2>&1 < /dev/null &

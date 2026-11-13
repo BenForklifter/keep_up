@@ -1,1 +1,7 @@
+# Speech recognition: Moonshine v2 (streaming, offline). Models are downloaded on first start.
+moonshine-voice==0.1.6
+# Key words: parts of speech + named entities ...
+spacy==3.8.18
+en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+# ... and how rare a word is in everyday English
 wordfreq==3.1.1

@@ -5,7 +5,12 @@
     screen = Screen()        # opens a white fullscreen window
     screen.show("Apfel")     # draws the text as large as possible (black, centered)
     screen.show("Apfel", status="3")  # ... plus a small label in the bottom-left corner
+    screen.show("<span foreground='#999'>alt</span> neu", markup=True)  # Pango markup
     screen.close()           # closes the window
+
+The text size stays steady while the text changes a little (no jumping with every
+new word); it shrinks at once when text no longer fits and grows only when it
+could get clearly bigger.
 
 show() is thread-safe and returns immediately; GTK runs in its own background thread.
 """
@@ -27,6 +32,7 @@ FONT = "DejaVu Sans Bold"
 MARGIN = 0.05      # free border on each side, fraction of screen size
 STATUS_HEIGHT = 0.06  # bottom-left status label, fraction of screen height
 STATUS_GRAY = 0.55
+GROW_AT = 1.3      # grow the text only when it could get this much bigger
 _REF_SIZE = 100    # font size used for measuring before scaling
 
 
@@ -34,6 +40,8 @@ class Screen:
     def __init__(self):
         self._text = ""
         self._status = ""
+        self._markup = False
+        self._scale = 0.0
         self._ready = threading.Event()
         self._error = None
         threading.Thread(target=self._run, daemon=True).start()
@@ -41,9 +49,12 @@ class Screen:
         if self._error:
             raise RuntimeError(self._error)
 
-    def show(self, text: str, status: str = "") -> None:
-        """Display text (and a small status label), replacing whatever is shown."""
-        GLib.idle_add(self._set_text, str(text), str(status))
+    def show(self, text: str, status: str = "", markup: bool = False) -> None:
+        """Display text (and a small status label), replacing whatever is shown.
+
+        With markup=True, text is Pango markup (colors, <b>, ...).
+        """
+        GLib.idle_add(self._set_text, str(text), str(status), markup)
 
     def close(self) -> None:
         GLib.idle_add(Gtk.main_quit)
@@ -70,8 +81,8 @@ class Screen:
         Gtk.main()
         self._window.destroy()
 
-    def _set_text(self, text, status):
-        self._text, self._status = text, status
+    def _set_text(self, text, status, markup):
+        self._text, self._status, self._markup = text, status, markup
         self._area.queue_draw()
         return False  # run once
 
@@ -89,20 +100,22 @@ class Screen:
         # The status band at the bottom is always reserved, so text doesn't jump.
         status_height = height * STATUS_HEIGHT
         text_height = height - status_height
-        self._draw_text(cr, self._text, width / 2, text_height / 2,
+        self._draw_text(cr, width / 2, text_height / 2,
                         width * (1 - 2 * MARGIN), text_height - 2 * height * MARGIN)
         self._draw_status(cr, height * MARGIN, height - height * MARGIN, status_height)
 
-    def _draw_text(self, cr, text, center_x, center_y, max_width, max_height):
-        """Text as large as fits into the box, centered on (center_x, center_y)."""
-        layout = _layout(cr, text)
+    def _draw_text(self, cr, center_x, center_y, max_width, max_height):
+        """The text, as large as fits into the box, centered on (center_x, center_y)."""
+        layout = _layout(cr, self._text, self._markup)
         ink, _ = layout.get_pixel_extents()
         if ink.width == 0 or ink.height == 0:
             return
-        scale = min(max_width / ink.width, max_height / ink.height)
+        fit = min(max_width / ink.width, max_height / ink.height)
+        if fit < self._scale or fit > self._scale * GROW_AT:
+            self._scale = fit
         cr.save()
         cr.translate(center_x, center_y)
-        cr.scale(scale, scale)
+        cr.scale(self._scale, self._scale)
         cr.translate(-(ink.x + ink.width / 2), -(ink.y + ink.height / 2))
         cr.set_source_rgb(0, 0, 0)
         PangoCairo.show_layout(cr, layout)
@@ -110,7 +123,7 @@ class Screen:
 
     def _draw_status(self, cr, left, bottom, size):
         """Small gray label whose bottom-left corner is at (left, bottom)."""
-        layout = _layout(cr, self._status)
+        layout = _layout(cr, self._status, markup=False)
         ink, _ = layout.get_pixel_extents()
         if ink.height == 0:
             return
@@ -124,11 +137,14 @@ class Screen:
         cr.restore()
 
 
-def _layout(cr, text):
+def _layout(cr, text, markup):
     layout = PangoCairo.create_layout(cr)
     font = Pango.FontDescription(FONT)
     font.set_size(_REF_SIZE * Pango.SCALE)
     layout.set_font_description(font)
     layout.set_alignment(Pango.Alignment.CENTER)
-    layout.set_text(text, -1)
+    if markup:
+        layout.set_markup(text, -1)
+    else:
+        layout.set_text(text, -1)
     return layout
