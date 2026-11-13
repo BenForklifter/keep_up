@@ -9,6 +9,8 @@
     screen.show("<span foreground='#999'>alt</span> neu", markup=True)  # Pango markup
     screen.point_to(90)      # a glow at the edge towards the speaker (mic array degrees)
     screen.point_to(None)    # ... gone again
+    screen.addressed(True)   # shows that someone is talking to the person at the screen
+    screen.addressed(False)  # ... gone again
     screen.close()           # closes the window
 
 The text size stays steady while the text changes a little (no jumping with every
@@ -19,22 +21,29 @@ The glow is a soft blue spot on the screen edge, like a blurred blob: strongest
 right at the edge, fading out smoothly along it and well into the screen. It
 fades in and out; when it moves, the old one fades while the new one appears.
 
+Someone talking to the person at the screen (they said one of the person's names)
+is hard to miss: an orange frame around the screen with "Someone is talking to
+you" at the top, and the glow towards the speaker turns orange too.
+
 Setting it up, once: tap (or click) the screen and a Settings button shows for a
-few seconds. It opens a card with buttons to turn and flip the glow until it
-points at whoever speaks - that depends on how the mic array lies on the table.
+few seconds. It opens a card with
+- buttons to turn and flip the glow until it points at whoever speaks - that
+  depends on how the mic array lies on the table;
+- the names the person at the screen is called by ("Mary, Grandma"), typed on an
+  on-screen keyboard (or a real one) in a card of its own.
 Changes are saved right away (shared.SETTINGS_FILE); Done, or a minute
 untouched, closes the card again.
 
-show() and point_to() are thread-safe and return immediately; GTK runs in its
-own background thread.
+show(), point_to() and addressed() are thread-safe and return immediately; GTK
+runs in its own background thread.
 """
 import math
 import os
 import threading
 import time
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 
-from shared import SETTINGS_FILE, read_json, write_json
+from shared import SETTINGS_FILE, clean_names, read_json, write_json
 
 os.environ.setdefault("DISPLAY", ":0")
 os.environ.setdefault("XAUTHORITY", os.path.expanduser("~/.Xauthority"))
@@ -62,15 +71,29 @@ GLOW_DEPTH = 0.22  # ... and into the screen (behind the text there, but light b
 GLOW_COLOR = (0x0F / 255, 0x6C / 255, 0xBD / 255)  # right at the edge: Fluent blue #0f6cbd,
                                                    # the same as the Done button (UI_CSS)
 GLOW_STEPS = 16    # gradient stops of its fade (more = smoother)
-GLOW_FADE_SECONDS = 0.3
-FADE_FRAME_MS = 40  # redraw interval while a glow fades (none otherwise)
+
+ALERT_COLOR = (0xDA / 255, 0x3B / 255, 0x01 / 255)  # someone talks to the person:
+                                                    # Fluent dark orange #da3b01
+ALERT_FRAME = 0.025  # its frame around the screen, fraction of the shorter side
+ALERT_LABEL = 0.05  # its label at the top: text height, fraction of screen height
+ALERT_TEXT = "Someone is talking to you"
+
+FADE_SECONDS = 0.3  # glows and the alert fade in and out this fast
+FADE_FRAME_MS = 40  # redraw interval while something fades (none otherwise)
 
 TURN_STEP = 30     # degrees per tap on a turn button (one LED of the mic array)
 OFFER_SECONDS = 8  # the Settings button goes again after this long ...
-SETTINGS_SECONDS = 60  # ... the settings card after this long untouched
+SETTINGS_SECONDS = 60  # ... a settings card after this long untouched
 OFFER_BOTTOM = 96  # pixels between the Settings button and the bottom edge
-SETTINGS_TITLE = "Speaker direction"
-SETTINGS_TEXT = "Let someone talk, then turn the blue glow\nuntil it points at them."
+DIRECTION_TITLE = "Speaker direction"
+DIRECTION_TEXT = "Let someone talk, then turn the blue glow\nuntil it points at them."
+NAMES_TITLE = "Name"
+NAMES_TEXT = ("What is the person at this screen called? Several names\n"
+              "with commas between them, e.g. \"Mary, Grandma\". When someone\n"
+              "says one, the screen shows they are talking to them.")
+NAMES_UNSET = "Not set"
+KEY_ROWS = ("QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM,-")  # on-screen keyboard (+ Backspace)
+BACKSPACE = "⌫"
 UI_CSS = b"""
 .ui { font-family: "Segoe UI", "Noto Sans", "DejaVu Sans", sans-serif; }
 .ui.card {
@@ -104,6 +127,22 @@ UI_CSS = b"""
     border-radius: 22px;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16);
 }
+.ui button.key { min-width: 52px; padding: 10px 0; }
+.ui .section { margin-top: 32px; }
+.ui .value { font-size: 19px; color: #242424; }
+.ui entry {
+    background-image: none;
+    background-color: #ffffff;
+    border: 1px solid #d1d1d1;
+    border-bottom: 2px solid #616161;
+    border-radius: 6px;
+    box-shadow: none;
+    color: #242424;
+    font-size: 22px;
+    padding: 8px 12px;
+    margin-bottom: 20px;
+}
+.ui entry:focus { border-bottom-color: #0f6cbd; }
 """
 
 
@@ -111,6 +150,7 @@ UI_CSS = b"""
 class _Settings:
     turn: int = 180  # degrees added to the mic array's angle ...
     mirrored: bool = False  # ... after counting it the other way round
+    names: list[str] = field(default_factory=list)  # what the person at the screen is called
 
     def angle(self, direction: float) -> float:
         """Screen angle (0 = top edge, clockwise) towards a mic array direction."""
@@ -135,9 +175,12 @@ class Screen:
         self._direction = None  # where the speaker is, in mic array degrees (None: silence) ...
         self._last_direction = None  # ... and where the last one was (shown while setting up)
         self._glows: list[_Glow] = []  # the one shown, and earlier ones still fading out
-        self._fading = None  # GLib timer while glows fade
+        self._alert = 0.0  # opacity of "someone is talking to you" ...
+        self._alert_target = 0.0  # ... and the one it fades towards
+        self._fading = None  # GLib timer while glows or the alert fade
         self._faded_at = 0.0
-        self._panel_timer = None  # GLib timer that hides the settings panel
+        self._panel = None  # what of the settings shows: None, "offer", "settings", "names"
+        self._panel_timer = None  # GLib timer that hides it
         self._ready = threading.Event()
         self._error = None
         threading.Thread(target=self._run, daemon=True).start()
@@ -159,6 +202,10 @@ class Screen:
         and flip that to the screen.
         """
         GLib.idle_add(self._set_direction, direction)
+
+    def addressed(self, on: bool) -> None:
+        """Show that someone is talking to the person at the screen (False: stop)."""
+        GLib.idle_add(self._set_addressed, bool(on))
 
     def close(self) -> None:
         GLib.idle_add(Gtk.main_quit)
@@ -212,38 +259,49 @@ class Screen:
     def _update_glow(self):
         """Fade the glow to where the speaker is (while setting up: was, in silence)."""
         direction = self._direction
-        if direction is None and self._card.get_visible():
+        if direction is None and self._panel == "settings":
             direction = self._last_direction
         angle = None if direction is None else self._settings.angle(direction)
         for glow in self._glows:  # the same glow stays (or comes back), others fade out
             glow.target = 1.0 if glow.angle == angle else 0.0
         if angle is not None and not any(glow.target for glow in self._glows):
             self._glows.append(_Glow(angle))
-        if self._fading is None and any(glow.opacity != glow.target for glow in self._glows):
+        self._start_fading()
+
+    def _set_addressed(self, on):
+        self._alert_target = 1.0 if on else 0.0
+        self._start_fading()
+        return False  # run once
+
+    def _start_fading(self):
+        if self._fading is None and self._still_fading():
             self._faded_at = time.monotonic()
             self._fading = GLib.timeout_add(FADE_FRAME_MS, self._fade)
 
+    def _still_fading(self):
+        return (self._alert != self._alert_target
+                or any(glow.opacity != glow.target for glow in self._glows))
+
     def _fade(self):
-        """One step of fading glows in and out; stops when all are done."""
+        """One step of fading glows and the alert in and out; stops when all are done."""
         now = time.monotonic()
-        step, self._faded_at = (now - self._faded_at) / GLOW_FADE_SECONDS, now
+        step, self._faded_at = (now - self._faded_at) / FADE_SECONDS, now
         for glow in self._glows:
-            if glow.opacity < glow.target:
-                glow.opacity = min(glow.opacity + step, glow.target)
-            else:
-                glow.opacity = max(glow.opacity - step, glow.target)
+            glow.opacity = _towards(glow.opacity, glow.target, step)
         self._glows = [glow for glow in self._glows if glow.opacity > 0 or glow.target > 0]
+        self._alert = _towards(self._alert, self._alert_target, step)
         self._area.queue_draw()
-        if all(glow.opacity == glow.target for glow in self._glows):
-            self._fading = None
-            return False  # no more redraws until the next change
-        return True
+        if self._still_fading():
+            return True
+        self._fading = None
+        return False  # no more redraws until the next change
 
     # --- settings ---------------------------------------------------------------
 
     def _add_settings(self, overlay):
-        """The Settings button near the bottom, and the card it opens in the
-        middle (both hidden at first). Their margins leave room for the shadows."""
+        """The Settings button near the bottom, the card it opens in the middle,
+        and the card for typing the names (all hidden at first). Their margins
+        leave room for the shadows."""
         self._offer = _styled(Gtk.Box(halign=Gtk.Align.CENTER, valign=Gtk.Align.END, margin=16), "ui")
         self._offer.set_margin_bottom(OFFER_BOTTOM)
         self._offer.add(_button("Settings", lambda: self._show_panel("settings"), "offer"))
@@ -253,41 +311,103 @@ class Screen:
                        _button("↻  Turn right", lambda: self._turn(TURN_STEP)),
                        _button("⇅  Flip", self._flip)):
             turns.add(button)
+        names = Gtk.Box(spacing=12)
+        self._names_label = _styled(Gtk.Label(xalign=0, hexpand=True, max_width_chars=26,
+                                              ellipsize=Pango.EllipsizeMode.END), "value")
+        names.add(self._names_label)
+        names.add(_button("✎  Change", self._edit_names))
+        self._show_names()
         done = _button("Done", lambda: self._show_panel(None), "primary")
         done.set_halign(Gtk.Align.END)
         done.set_margin_top(28)
-        self._card = _styled(Gtk.Box(orientation=Gtk.Orientation.VERTICAL, halign=Gtk.Align.CENTER,
-                                     valign=Gtk.Align.CENTER, margin=40), "ui", "card")
-        for widget in (_styled(Gtk.Label(label=SETTINGS_TITLE, xalign=0), "title"),
-                       _styled(Gtk.Label(label=SETTINGS_TEXT, xalign=0), "text"),
-                       turns, done):
-            self._card.add(widget)
+        self._card = _card(_styled(Gtk.Label(label=DIRECTION_TITLE, xalign=0), "title"),
+                           _styled(Gtk.Label(label=DIRECTION_TEXT, xalign=0), "text"),
+                           turns,
+                           _styled(Gtk.Label(label=NAMES_TITLE, xalign=0), "title", "section"),
+                           names, done)
 
-        overlay.add_overlay(self._offer)
-        overlay.add_overlay(self._card)
+        self._entry = Gtk.Entry()
+        self._entry.connect("changed", lambda _: self._keep_panel())  # also a real keyboard
+        self._entry.connect("activate", lambda _: self._save_names())  # Enter
+        buttons = Gtk.Box(spacing=12, halign=Gtk.Align.END, margin_top=28)
+        buttons.add(_button("Cancel", lambda: self._show_panel("settings")))
+        buttons.add(_button("Save", self._save_names, "primary"))
+        self._names_card = _card(_styled(Gtk.Label(label=NAMES_TITLE, xalign=0), "title"),
+                                 _styled(Gtk.Label(label=NAMES_TEXT, xalign=0), "text"),
+                                 self._entry, self._keyboard(), buttons)
+
+        for widget in (self._offer, self._card, self._names_card):
+            overlay.add_overlay(widget)
+
+    def _keyboard(self):
+        """Letter keys, comma, hyphen, Backspace and a wide space bar. They don't
+        take the focus, so the text cursor stays in the entry."""
+        keyboard = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        rows = [[_key(c, lambda c=c: self._type(c)) for c in row] for row in KEY_ROWS]
+        rows[-1].append(_key(BACKSPACE, lambda: self._entry.emit("backspace")))
+        space = _key("Space", lambda: self._type(" "))
+        space.set_size_request(360, -1)
+        rows.append([space])
+        for keys in rows:
+            row = Gtk.Box(spacing=6, halign=Gtk.Align.CENTER)
+            for key in keys:
+                row.add(key)
+            keyboard.add(row)
+        return keyboard
+
+    def _type(self, char):
+        """An on-screen key: names start with a capital letter, a comma brings its space."""
+        before = self._entry.get_text()[:self._entry.get_position()]
+        if char == ",":
+            char = ", "
+        elif not before or before[-1] in " ,-":
+            char = char.upper()
+        else:
+            char = char.lower()
+        self._entry.emit("insert-at-cursor", char)
+
+    def _edit_names(self):
+        self._entry.set_text(", ".join(self._settings.names))
+        self._show_panel("names")
+        self._entry.grab_focus_without_selecting()
+        self._entry.set_position(-1)  # at the end
+
+    def _save_names(self):
+        self._settings.names = clean_names(self._entry.get_text().split(","))
+        self._show_names()
+        self._settings_changed()
+
+    def _show_names(self):
+        self._names_label.set_text(", ".join(self._settings.names) or NAMES_UNSET)
 
     def _on_tap(self, _widget, _event):
-        if not self._card.get_visible():
+        if self._panel in (None, "offer"):
             self._show_panel("offer")
         return True
 
     def _show_panel(self, part):
-        """Show None (nothing), "offer" (the Settings button) or "settings" (the
-        card); the latter two go again when left untouched."""
+        """Show None (nothing), "offer" (the Settings button), "settings" (the
+        card) or "names" (the card for typing them); all go again when left untouched."""
+        self._panel = part
         self._offer.set_visible(part == "offer")
         self._card.set_visible(part == "settings")
+        self._names_card.set_visible(part == "names")
         self._set_cursor(visible=part is not None)
+        self._keep_panel()
+        self._update_glow()
+
+    def _keep_panel(self):
+        """(Re)start the time after which the panel shown goes again."""
         if self._panel_timer:
             GLib.source_remove(self._panel_timer)
             self._panel_timer = None
-        if part:
-            seconds = OFFER_SECONDS if part == "offer" else SETTINGS_SECONDS
+        if self._panel:
+            seconds = OFFER_SECONDS if self._panel == "offer" else SETTINGS_SECONDS
             self._panel_timer = GLib.timeout_add_seconds(seconds, self._panel_timed_out)
-        self._update_glow()
 
     def _panel_timed_out(self):
         self._panel_timer = None
-        self._show_panel(None)
+        self._show_panel(None)  # names typed but not saved are dropped
         return False
 
     def _turn(self, degrees):
@@ -327,19 +447,22 @@ class Screen:
                         width * (1 - 2 * MARGIN), text_height - 2 * height * MARGIN)
         self._draw_status(cr, height * MARGIN, height - height * MARGIN, status_height)
         self._draw_info(cr, width - height * MARGIN, height - height * MARGIN, height * INFO_HEIGHT)
+        self._draw_alert(cr, width, height)
 
     def _draw_glows(self, cr, width, height):
         """Each glow: an ellipse centered on its edge point (half of it off
-        screen), its gray fading out from the center like a blur."""
+        screen), its gray fading out from the center like a blur. Orange while
+        someone is talking to the person: it points at who it is."""
         side = min(width, height)
         along, depth = side * GLOW_ALONG, side * GLOW_DEPTH
+        color = [blue + (orange - blue) * self._alert for blue, orange in zip(GLOW_COLOR, ALERT_COLOR)]
         for glow in self._glows:
             x, y, on_side_edge = _edge_point(glow.angle, width, height)
             spot = cairo.RadialGradient(0, 0, 0, 0, 0, 1)
             for i in range(GLOW_STEPS + 1):
                 r = i / GLOW_STEPS
                 alpha = math.exp(-3 * r * r) * (1 - r * r) * glow.opacity  # Gaussian, 0 at r = 1
-                spot.add_color_stop_rgba(r, *GLOW_COLOR, alpha)
+                spot.add_color_stop_rgba(r, *color, alpha)
             cr.save()
             cr.translate(x, y)
             if on_side_edge:
@@ -398,10 +521,72 @@ class Screen:
         PangoCairo.show_layout(cr, layout)
         cr.restore()
 
+    def _draw_alert(self, cr, width, height):
+        """Someone is talking to the person: an orange frame around the screen, and
+        from its top edge hangs a tab saying so (over the text, for a few seconds)."""
+        if self._alert == 0:
+            return
+        frame = min(width, height) * ALERT_FRAME
+        cr.push_group()  # drawn whole, then faded as one (overlaps don't get darker)
+        cr.set_source_rgb(*ALERT_COLOR)
+        cr.set_line_width(frame)
+        cr.rectangle(frame / 2, frame / 2, width - frame, height - frame)
+        cr.stroke()
+
+        layout = _layout(cr, ALERT_TEXT, markup=False)
+        ink, _ = layout.get_pixel_extents()
+        scale = min(height * ALERT_LABEL / ink.height, width * 0.8 / ink.width)
+        text_width, text_height = ink.width * scale, ink.height * scale
+        pad = text_height * 0.5
+        tab_width, tab_height = text_width + 4 * pad, frame + text_height + 2 * pad
+        _tab(cr, (width - tab_width) / 2, 0, tab_width, tab_height, radius=pad * 1.5)
+        cr.fill()
+
+        cr.save()
+        cr.translate(width / 2, frame + pad + text_height / 2)
+        cr.scale(scale, scale)
+        cr.translate(-(ink.x + ink.width / 2), -(ink.y + ink.height / 2))
+        cr.set_source_rgb(1, 1, 1)
+        PangoCairo.show_layout(cr, layout)
+        cr.restore()
+        cr.pop_group_to_source()
+        cr.paint_with_alpha(self._alert)
+
 
 def _load_settings() -> _Settings:
     saved = read_json(SETTINGS_FILE) or {}
-    return _Settings(**{f.name: saved[f.name] for f in fields(_Settings) if f.name in saved})
+    settings = _Settings(**{f.name: saved[f.name] for f in fields(_Settings) if f.name in saved})
+    settings.names = clean_names(settings.names)
+    return settings
+
+
+def _towards(value, target, step):
+    return min(value + step, target) if value < target else max(value - step, target)
+
+
+def _card(*widgets):
+    """A white card in the middle of the screen with the widgets one below the other."""
+    card = _styled(Gtk.Box(orientation=Gtk.Orientation.VERTICAL, halign=Gtk.Align.CENTER,
+                           valign=Gtk.Align.CENTER, margin=40), "ui", "card")
+    for widget in widgets:
+        card.add(widget)
+    return card
+
+
+def _key(label, action):
+    """A key of the on-screen keyboard: leaves the focus (and text cursor) in the entry."""
+    key = _button(label, action, "key")
+    key.set_focus_on_click(False)
+    return key
+
+
+def _tab(cr, x, y, width, height, radius):
+    """Path of a rectangle with rounded bottom corners."""
+    cr.move_to(x, y)
+    cr.line_to(x + width, y)
+    cr.arc(x + width - radius, y + height - radius, radius, 0, math.pi / 2)
+    cr.arc(x + radius, y + height - radius, radius, math.pi / 2, math.pi)
+    cr.close_path()
 
 
 def _styled(widget, *css_classes):

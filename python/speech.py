@@ -15,6 +15,8 @@ error rates on meeting talk (AMI): Tiny 19 %, Small 12.5 %, the earlier Whistle 
 
 on_line(line_id, text, complete) is called whenever the text of a line changes;
 a line keeps its id while it is revised and stops changing once complete.
+
+    stt.listen_for(["Mary", "Grandma"])      # names that should come out right
 """
 
 import os
@@ -70,6 +72,19 @@ class SpeechToText:
         print(f"speech: {MODEL_ARCH.name} model, {_cpus()}")
         self._lines_done = 0  # completed lines in the current stream
         self._speaking = False  # a line is open
+        self._terms: list[str] = []  # key terms the recognizer listens for ...
+        self._wanted_terms: list[str] = []  # ... and the ones it should
+
+    def listen_for(self, terms: list[str]) -> None:
+        """Favor these words where the audio is unclear: the names of the person at
+        the screen, which the model would otherwise often hear as everyday words.
+
+        Moonshine key terms: while decoding, tokens that continue one of them get a
+        bonus. Callable from any thread; takes effect from the next audio on. The
+        bonus can be set with the "keyterm_boost" option (default 2.0; strong boosts
+        and long lists garble the other words).
+        """
+        self._wanted_terms = list(terms)
 
     def run(self, blocks: Iterator[np.ndarray]) -> None:
         """Transcribe mono int16 16 kHz sample blocks until they end or fail."""
@@ -80,6 +95,8 @@ class SpeechToText:
         speed = _SpeedLog()
         try:
             while (samples := audio.take()) is not None:
+                if self._wanted_terms != self._terms:
+                    self._use_terms(self._wanted_terms)
                 started = time.monotonic()
                 stream.add_audio((samples / 32768.0).tolist(), RATE)
                 speed.add(len(samples) / RATE, time.monotonic() - started)
@@ -91,6 +108,15 @@ class SpeechToText:
             stream.stop()
             stream.close()
             audio.close()
+
+    def _use_terms(self, terms: list[str]) -> None:
+        """In the recognition thread, between two pieces of audio."""
+        self._terms = terms  # also on failure: tried once, not again with every piece
+        try:
+            self._transcriber.set_keyterms(terms or None)
+            print(f"speech: listening for {', '.join(terms) or 'no names'}")
+        except Exception as e:
+            print(f"speech: cannot listen for {terms}: {e!r}")
 
     def _open_stream(self):
         stream = self._transcriber.create_stream(update_interval=UPDATE_INTERVAL)

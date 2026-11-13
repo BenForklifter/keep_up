@@ -9,6 +9,8 @@ deploy.sh starts it with the board's own python3 (standard library + GTK only).
 - Both: a blue glow at the screen edge points towards whoever is speaking. It goes a
   few seconds after they stop, and is off while the array is muted. Which way
   it points is set on the screen itself: tap it (screen.py).
+- When the app hears someone say a name of the person at the screen (also set on
+  the screen), the screen shows that they are being talked to.
 """
 
 import signal
@@ -37,6 +39,7 @@ def show_forever(screen: Screen, follower: SpeakerFollower) -> None:
             if frame:
                 screen.show(frame.get("markup", ""), frame.get("status", ""), markup=True,
                             info=frame.get("info", ""))
+                screen.addressed(bool(frame.get("addressed")))
 
         state = follower.state
         direction = None if state.muted else state.direction

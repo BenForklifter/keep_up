@@ -2,11 +2,11 @@
 
 Both run from this folder and talk through small JSON files in .board/:
 
-    screen.json  app -> board: {"markup", "status", "info"}, the frame to draw
-    mic.json     board -> app: {"direction", "muted", "time"}, the mic array state
-
-and settings.json, board_host.py's own: how the glow towards the speaker is set
-up on the screen (screen.py). deploy.sh keeps it across deploys.
+    screen.json    app -> board: {"markup", "status", "info", "addressed"}, the frame to draw
+    mic.json       board -> app: {"direction", "muted", "time"}, the mic array state
+    settings.json  board -> app: what is set up on the screen itself (screen.py): which
+                   way the glow towards the speaker points, and the names of the person
+                   at the screen, which the app listens for. deploy.sh keeps it across deploys.
 
 Speakers are told apart by where they sit: each direction around the table has
 its own color for the LED on the mic array that lights up towards them.
@@ -24,6 +24,8 @@ SCREEN_FILE = BOARD_DIR / "screen.json"
 MIC_FILE = BOARD_DIR / "mic.json"
 SETTINGS_FILE = BOARD_DIR / "settings.json"
 MIC_STALE_SECONDS = 3.0  # older mic state means board_host.py stopped updating it
+MAX_NAMES = 6  # names of the person at the screen: a few (a long list costs the
+MAX_NAME_CHARS = 30  # speech recognition accuracy on all other words), each short
 
 
 class MicState(NamedTuple):
@@ -53,6 +55,23 @@ def read_json(path: Path) -> dict | None:
         return json.loads(path.read_text())
     except (FileNotFoundError, ValueError):
         return None
+
+
+def clean_names(names) -> list[str]:
+    """Names as typed or saved -> trimmed, without empty ones, repeats or commas
+    (speech recognition separates its terms with them), at most MAX_NAMES."""
+    clean = []
+    for name in names if isinstance(names, list) else []:
+        if isinstance(name, str):
+            name = " ".join(name.replace(",", " ").split())[:MAX_NAME_CHARS].strip()
+            if name and name.lower() not in (n.lower() for n in clean):
+                clean.append(name)
+    return clean[:MAX_NAMES]
+
+
+def read_names() -> list[str]:
+    """What the person at the screen is called ("Mary", "Grandma"), set on the screen."""
+    return clean_names((read_json(SETTINGS_FILE) or {}).get("names"))
 
 
 def write_mic_state(state: MicState) -> None:

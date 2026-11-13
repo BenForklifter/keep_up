@@ -13,10 +13,15 @@ With the reSpeaker mic array, a blue glow at the screen edge points towards whoe
 is speaking (drawn by board_host.py, straight from the array; set up by tapping
 the screen). While the array's mute button is on, the screen says so.
 
+When someone says one of the names of the person at the screen (set on the
+screen, see screen.py), the frame says "addressed" for ADDRESSED_SECONDS: the
+screen then shows that someone is talking to them.
+
 Frames go to shared.SCREEN_FILE as Pango markup; board_host.py draws them.
 Thread-safe: speech, knob and the refresh timer call in from different threads.
 """
 
+import re
 import textwrap
 import threading
 import time
@@ -42,6 +47,7 @@ LINE_CHARS = 24  # transcript: characters per line ...
 MAX_LINES = 3  # ... and number of lines (newest text wins)
 KEPT_LINES = 10  # transcript lines remembered
 KEYWORD_PAUSE = 0.4  # seconds between key word analyses (leaves CPU to speech recognition)
+ADDRESSED_SECONDS = 6.0  # how long the screen shows that someone talks to the person
 
 MUTED_TEXT = "Microphone muted"
 
@@ -62,6 +68,10 @@ class Display:
         self._message = ""  # status text instead of speech ("Listening ...")
         self._info = ""  # bottom-right corner: energy / carbon figures
         self._frame = None  # last frame written
+        self._names: list[str] = []  # what the person at the screen is called ...
+        self._name_pattern: re.Pattern | None = None  # ... found in a line by this
+        self._addressed_until = 0.0  # monotonic time
+        self._addressed_line = None  # the last line that said a name (counts once)
         self._unanalyzed: dict[int, _Line] = {}  # lines changed since the keyword thread looked
         self._new_text = threading.Event()
         threading.Thread(target=self._find_keywords_forever, daemon=True).start()
@@ -76,13 +86,25 @@ class Display:
         """
         mic = read_mic_state()
         with self._lock:
+            now = time.monotonic()
             self._message, self._mic = "", mic
             self._lines[line_id] = _Line(text, complete)
             for old in list(self._lines)[:-KEPT_LINES]:
                 del self._lines[old]
             self._unanalyzed[line_id] = _Line(text, complete)
-            self._render(time.monotonic())
+            name = _name_said(self._name_pattern, text, complete)
+            if name and line_id != self._addressed_line:
+                self._addressed_line = line_id
+                self._addressed_until = now + ADDRESSED_SECONDS
+                print(f"👋 talking to you: {name!r} in {text!r}")
+            self._render(now)
         self._new_text.set()
+
+    def watch_for(self, names: list[str]) -> None:
+        """The names of the person at the screen; saying one addresses them."""
+        with self._lock:
+            if names != self._names:
+                self._names, self._name_pattern = names, _name_pattern(names)
 
     def turn(self, steps: int) -> None:
         """Knob turned: change the level, clamped to 1 word ... LIVE."""
@@ -159,7 +181,8 @@ class Display:
         else:
             markup = _board_markup(self._board.words(now))
         status = "LIVE" if self._level == LIVE else str(LEVELS[self._level])
-        frame = {"markup": markup, "status": status, "info": self._info}
+        frame = {"markup": markup, "status": status, "info": self._info,
+                 "addressed": now < self._addressed_until}
         if frame != self._frame:
             self._frame = frame
             write_json(SCREEN_FILE, frame)
@@ -170,6 +193,28 @@ class Display:
             gray = OLD_LINE_GRAY if line.complete else 0.0
             rows += [_in_gray(row, gray) for row in textwrap.wrap(line.text, LINE_CHARS)]
         return "\n".join(rows[-MAX_LINES:])
+
+
+def _name_pattern(names: list[str]) -> re.Pattern | None:
+    """Finds any of the names as whole words, in any case; longer names first, so
+    "Aunt Mary" is found as such rather than as "Mary"."""
+    if not names:
+        return None
+    alternatives = "|".join(r"\s+".join(map(re.escape, name.split()))
+                            for name in sorted(names, key=len, reverse=True))
+    return re.compile(rf"(?<!\w)(?:{alternatives})(?!\w)", re.IGNORECASE)
+
+
+def _name_said(pattern: re.Pattern | None, text: str, final: bool) -> str | None:
+    """The name said in a line, if any. While the line is still spoken its last
+    word doesn't count: the recognizer often revises it (as in keywords.py)."""
+    if pattern is None:
+        return None
+    if not final:
+        words = text.rsplit(maxsplit=1)
+        text = words[0] if len(words) > 1 else ""
+    match = pattern.search(text)
+    return match.group(0) if match else None
 
 
 def _board_markup(words: list[Shown | None]) -> str:

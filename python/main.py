@@ -11,6 +11,9 @@ words of the talk; the Modulino Knob on the sketch side picks N, or the full liv
 transcript (display.py). Turning sends "knob_turned", pressing "knob_pressed"
 over the Bridge. A blue glow at the screen edge points towards whoever is speaking
 (mic array, board_host.py).
+When someone says a name of the person at the screen (set on the screen itself,
+screen.py), the screen shows that they are being talked to; speech recognition
+listens for these names in particular.
 The bottom-right corner shows the estimated power and carbon footprint (sci.py).
 """
 
@@ -22,6 +25,7 @@ from arduino.app_utils import App, Bridge
 from display import Display
 from microphone import TableMic
 from sci import CarbonMeter
+from shared import read_names
 from speech import SpeechToText
 
 REFRESH_SECONDS = 0.25  # how often the board is re-arranged (fading, dwell times)
@@ -29,6 +33,7 @@ SCI_SAMPLE_SECONDS = 5.0  # how often power is estimated and the corner updated
 SCI_LOG_SECONDS = 60.0  # how often the carbon figures go to the app log
 
 display = Display()
+stt: SpeechToText | None = None  # once the speech model is loaded
 
 
 def open_mic() -> TableMic | None:
@@ -58,6 +63,10 @@ def on_knob_pressed() -> None:
 def refresh_forever():
     while True:
         time.sleep(REFRESH_SECONDS)
+        names = read_names()  # can be changed on the screen at any time
+        display.watch_for(names)
+        if stt is not None:
+            stt.listen_for(names)
         display.tick()
 
 
