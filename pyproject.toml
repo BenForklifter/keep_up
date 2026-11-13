@@ -1,0 +1,14 @@
+# Development tools only. Arduino App Lab runs the app from app.yaml and installs
+# python/requirements.txt on the board.
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["python", "tools/eval"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["python", "tools/eval"]
