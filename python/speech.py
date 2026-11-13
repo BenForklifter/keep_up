@@ -41,7 +41,9 @@ MODEL_ARCH = ModelArch.TINY_STREAMING
 MODEL_DIR = Path(__file__).resolve().parents[1] / "models"
 RATE = 16000
 UPDATE_INTERVAL = 0.5  # seconds between caption updates (Moonshine stretches it when busy)
-MAX_BACKLOG = 3.0  # seconds; if recognition falls further behind, old audio is dropped ...
+MAX_BACKLOG = 8.0  # seconds; if recognition falls further behind, old audio is dropped ...
+# (tools/eval: at 3 s, bursts of fast talk lost 2-4 s per 20 s although recognition
+# averages well below real time - a longer buffer lets it catch up in the pauses)
 CATCH_UP_TO = 1.0  # ... at once down to this, so words get cut once rather than again and again
 SPEED_LOG_SECONDS = 15.0  # how often the log says whether recognition keeps up
 # Every update hands back all lines of its stream; renewing the stream in a pause

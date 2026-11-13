@@ -1,0 +1,7 @@
+# expect: job, Berlin, startup, salary, apartment, interview
+# ok: tom, bikes, electric bikes, founders, monday, contract
+B: Tom got the job at that startup in Berlin.
+A: Really? The one with the electric bikes?
+B: Exactly. The salary is much better, but he has to find an apartment.
+C: Apartments in Berlin are so expensive right now.
+B: He has another interview with the founders on Monday, then he signs the contract.

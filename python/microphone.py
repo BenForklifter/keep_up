@@ -11,17 +11,32 @@ mono capture would average both.
     mic = TableMic()
     for samples in mic.blocks():   # mono int16 at 16 kHz
         ...
+
+Test audio (tools/eval): a mono 16 kHz 16-bit WAV dropped into .board/test/ is
+played instead of the microphone, at real-time pace (the microphone keeps the
+clock). Silence before it lets recognition finish what the room said; silence
+after it lets the last line complete. The log marks "[TEST] start <name>" (silence
+begins), "[TEST] audio <name>" (the WAV begins) and "[TEST] end <name>".
 """
 
+import time
+import wave
 from collections.abc import Iterator
 from pathlib import Path
 
 import numpy as np
 from arduino.app_peripherals.microphone import Microphone
 
+from shared import BOARD_DIR
+
 RATE = 16000
 RESPEAKER_USB_ID = ("2886", "001a")
 CHANNELS, BEAM_CHANNEL = 2, 0  # also right for the 6-channel firmware: ALSA hands over the first two
+
+TEST_DIR = BOARD_DIR / "test"
+TEST_CHECK_SECONDS = 0.25
+TEST_LEAD_SECONDS = 10.0  # silence before test audio: room lines complete, backlog drains
+TEST_TAIL_SECONDS = 8.0  # silence after test audio: recognition catches up, last line completes
 
 
 class TableMic:
@@ -39,9 +54,46 @@ class TableMic:
 
     def blocks(self) -> Iterator[np.ndarray]:
         """Mono int16 sample blocks while the microphone delivers audio."""
+        test, test_name, test_lead, next_check = None, "", 0, 0.0
         for block in self._mic.stream():
             frames = np.asarray(block, dtype=np.int16).reshape(-1, self._channels)
-            yield frames[:, BEAM_CHANNEL]
+            samples = frames[:, BEAM_CHANNEL]
+            if test is None and time.monotonic() >= next_check:
+                next_check = time.monotonic() + TEST_CHECK_SECONDS
+                test, test_name = _take_test_audio()
+                test_lead = int(TEST_LEAD_SECONDS * RATE) if test is not None else 0
+            if test is not None:  # replace the microphone, same block size and pace
+                n = len(samples)
+                if test_lead > 0:
+                    test_lead -= n
+                    if test_lead <= 0:
+                        print(f"[TEST] audio {test_name}", flush=True)
+                samples, test = np.pad(test[:n], (0, max(0, n - len(test)))), test[n:]
+                if not len(test):
+                    test = None
+                    print(f"[TEST] end {test_name}", flush=True)
+            yield samples
+
+
+def _take_test_audio() -> tuple[np.ndarray | None, str]:
+    """Samples (plus trailing silence) of a WAV waiting in TEST_DIR, which is removed."""
+    waiting = sorted(TEST_DIR.glob("*.wav")) if TEST_DIR.is_dir() else []
+    if not waiting:
+        return None, ""
+    path = waiting[0]
+    try:
+        with wave.open(str(path)) as w:
+            if (w.getnchannels(), w.getsampwidth(), w.getframerate()) != (1, 2, RATE):
+                raise ValueError("test audio must be mono 16 kHz 16-bit")
+            audio = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16)
+    except Exception as e:
+        print(f"[TEST] skipped {path.name}: {e!r}", flush=True)
+        path.unlink(missing_ok=True)
+        return None, ""
+    path.unlink()
+    print(f"[TEST] start {path.stem} ({len(audio) / RATE:.1f}s)", flush=True)
+    lead, tail = (np.zeros(int(sec * RATE), np.int16) for sec in (TEST_LEAD_SECONDS, TEST_TAIL_SECONDS))
+    return np.concatenate([lead, audio, tail]), path.stem
 
 
 def _find_respeaker() -> str | None:

@@ -1,0 +1,7 @@
+# expect: dog|dogs, vet, Bella, surgery, knee, insurance
+# ok: weeks, euros, two thousand euros, six weeks
+C: How is Bella doing after the surgery?
+A: Much better. The vet said her knee will heal in about six weeks.
+B: Poor dog. Was the surgery expensive?
+A: Two thousand euros, but the insurance paid most of it.
+C: Good thing you had insurance for her.

@@ -45,3 +45,7 @@ models/
 
 # Files the app container and board_host.py exchange (runtime only)
 .board/
+
+# Evaluation runs: synthesized audio and reports (tools/eval/eval.py)
+tools/eval/out/
+tools/eval/.cache/
