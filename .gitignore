@@ -39,3 +39,13 @@ secrets*
 *~
 .DS_Store
 Thumbs.db
+
+# local_asr brick: only its code is in git. The heavy parts (Python packages, Cactus
+# runtime, Whistle model) already exist on the board in the local-speech-to-text
+# starter app; deploy.sh copies them from there into this app on the board.
+bricks/local_asr/vendor/
+bricks/local_asr/service/runtime/
+bricks/local_asr/service/models/*.cact
+
+# Live text handed from the app container to the screen process (runtime only)
+.screen/

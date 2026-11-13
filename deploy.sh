@@ -2,40 +2,68 @@
 # Deploy this App Lab app to the Arduino UNO Q and (re)start it.
 #
 #   ./deploy.sh         copy working copy to the board, rebuild/flash, start
-#   ./deploy.sh logs    show the app's logs on the board
-#   ./deploy.sh stop    stop the app
+#   ./deploy.sh logs    follow the app's logs on the board
+#   ./deploy.sh stop    stop the app (and the screen)
 #
-# Override the board address if mDNS doesn't resolve:
+# Override the board address if its IP changed:
 #   BOARD=arduino@192.168.x.y ./deploy.sh
+# (find it on the board's monitor with `hostname -I`)
 set -euo pipefail
 
-# mDNS name gets a "-N" suffix on busy networks; check with: avahi-browse -rt _arduino._tcp
-BOARD="${BOARD:-arduino@benFelixUno-2.local}"
+# IP, because the .local name keeps changing on the busy hackathon network
+BOARD="${BOARD:-arduino@192.168.1.216}"
 APP="keep_up"
-REMOTE_DIR="/home/arduino/ArduinoApps/$APP"
+DIR="/home/arduino/ArduinoApps/$APP"
+# Heavy brick files are not in git. On the board they are copied once from the
+# starter app and then kept across deploys.
+BRICK_SRC="/home/arduino/ArduinoApps/local-speech-to-text/bricks/local_asr"
+KEEP="bricks/local_asr/vendor bricks/local_asr/service/runtime bricks/local_asr/service/models/whistle.cact"
 
 cd "$(dirname "$0")"
 
+# The screen process runs on the board itself (the app container can't reach the display)
+PIDFILE="$DIR/.screen/host.pid"
+STOP_SCREEN="if [ -f '$PIDFILE' ]; then kill \"\$(cat '$PIDFILE')\" 2>/dev/null || true; rm -f '$PIDFILE'; fi"
+
+# Runs on the board; reads the app files as a tar stream on stdin.
+PRUNE=$(for k in $KEEP; do printf -- '-o -path ./%s ' "$k"; done)
+read -r -d '' REMOTE_SCRIPT <<EOF || true
+set -e
+arduino-app-cli app stop '$DIR' </dev/null >/dev/null 2>&1 || true
+$STOP_SCREEN
+mkdir -p '$DIR' && cd '$DIR'
+# Remove old files (so deleted/renamed files disappear), keep App Lab's cache and brick binaries
+find . -mindepth 1 \\( -path ./.cache $PRUNE\\) -prune -o -type f -exec rm -f {} +
+tar -xzf -
+for p in $KEEP; do
+  [ -e "\$p" ] && continue
+  src="$BRICK_SRC/\${p#bricks/local_asr/}"
+  if [ -e "\$src" ]; then mkdir -p "\$(dirname "\$p")" && cp -r "\$src" "\$p" && echo ">> copied \$p from starter app"
+  else echo "!! missing \$p, no copy at \$src (get it from github.com/91volt/uno-q-speech-to-text)"; fi
+done
+echo '>> Starting screen on the monitor'
+mkdir -p .screen
+DISPLAY=:0 setsid nohup python3 '$DIR/python/screen_host.py' > .screen/host.log 2>&1 < /dev/null &
+echo \$! > '$PIDFILE'
+sleep 2
+kill -0 "\$(cat '$PIDFILE')" 2>/dev/null || { echo '!! screen failed:'; tail -5 .screen/host.log; }
+echo '>> Starting app (builds + flashes sketch, starts python)'
+arduino-app-cli app start '$DIR' </dev/null
+EOF
+
 case "${1:-deploy}" in
   logs)
-    exec ssh -t "$BOARD" "arduino-app-cli app logs --follow '$REMOTE_DIR'"
+    exec ssh -t "$BOARD" "arduino-app-cli app logs --follow '$DIR'"
     ;;
   stop)
-    exec ssh "$BOARD" "arduino-app-cli app stop '$REMOTE_DIR'"
+    exec ssh "$BOARD" "arduino-app-cli app stop '$DIR'; $STOP_SCREEN"
     ;;
   deploy)
-    echo ">> Deploying $APP to $BOARD:$REMOTE_DIR"
-    # Ship every file git would track (committed or not, minus .gitignore'd ones),
-    # then on the board: stop app, replace files (keep App Lab's .cache), start app.
+    echo ">> Deploying $APP to $BOARD:$DIR"
+    # Ship every file git would track (committed or not, minus .gitignore'd ones)
     git ls-files -z --cached --others --exclude-standard \
       | tar --null --ignore-failed-read -czf - -T - \
-      | ssh "$BOARD" "set -e
-          arduino-app-cli app stop '$REMOTE_DIR' </dev/null >/dev/null 2>&1 || true
-          mkdir -p '$REMOTE_DIR'
-          find '$REMOTE_DIR' -mindepth 1 -maxdepth 1 ! -name .cache -exec rm -rf {} +
-          tar -xzf - -C '$REMOTE_DIR'
-          echo '>> Starting app (builds + flashes sketch, starts python)'
-          arduino-app-cli app start '$REMOTE_DIR' </dev/null"
+      | ssh "$BOARD" "$REMOTE_SCRIPT"
     echo ">> Done. Logs: ./deploy.sh logs"
     ;;
   *)

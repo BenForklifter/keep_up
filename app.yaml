@@ -1,5 +1,6 @@
 name: keep_up
-description: ""
+description: "Offline speech to text on the UNO Q"
 ports: []
-bricks: []
+bricks:
+- local_asr: {}
 icon: 😀
