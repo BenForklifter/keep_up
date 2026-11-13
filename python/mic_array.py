@@ -12,8 +12,12 @@ from most, recent samples counting more. It then
   speaker, and to the app, which says on screen when the array is muted.
 
 Unplugging and replugging the array is fine: it is looked for every few seconds.
+
+In the sleep mode (presence.py) the ring is off and the array is left alone: no
+polling, no looking for it, until keep_up wakes up again.
 """
 
+import threading
 import time
 from collections import deque
 
@@ -36,15 +40,25 @@ class SpeakerFollower:
         self._state = NO_MIC_ARRAY
         self._written_at = 0.0
         self._led_direction = None
+        self._awake = threading.Event()
+        self._awake.set()
 
     @property
     def state(self) -> MicState:
         """The latest state (NO_MIC_ARRAY while none is plugged in); any thread may read it."""
         return self._state
 
+    def sleep(self, asleep: bool) -> None:
+        """Sleep mode on or off; any thread."""
+        if asleep:
+            self._awake.clear()
+        else:
+            self._awake.set()
+
     def run_forever(self) -> None:
         reported = None
         while True:
+            self._awake.wait()
             try:
                 with XVF3800.open() as array:
                     self._array = array
@@ -75,6 +89,8 @@ class SpeakerFollower:
 
     def _follow(self, array: XVF3800) -> None:
         while True:
+            if not self._awake.is_set():
+                self._doze(array)
             angle, speech = array.read("DOA_VALUE")
             muted = array.read("GPO_READ_VALUES")[MUTE_OUTPUT] == 1
             now = time.monotonic()
@@ -87,6 +103,15 @@ class SpeakerFollower:
                 self._led_direction = direction
             self._report(MicState(direction, muted), now)
             time.sleep(POLL_SECONDS)
+
+    def _doze(self, array: XVF3800) -> None:
+        """Ring off and no polling until awake; then the ring follows the speaker again."""
+        array.write("LED_EFFECT", [LED_EFFECT_OFF])
+        self._report(NO_MIC_ARRAY, time.monotonic())  # nobody speaking
+        self._awake.wait()
+        self._speech.clear()
+        self._led_direction = None
+        array.write("LED_EFFECT", [LED_EFFECT_DOA])
 
     def _speaker_direction(self, now: float) -> int | None:
         while self._speech and self._speech[0][0] < now - SPEAKER_WINDOW:

@@ -52,8 +52,12 @@ class TableMic:
             self.name = self._mic.name
         self._mic.start()
 
+    def close(self) -> None:
+        """Stop listening (from any thread, also more than once): blocks() ends."""
+        self._mic.stop()
+
     def blocks(self) -> Iterator[np.ndarray]:
-        """Mono int16 sample blocks while the microphone delivers audio."""
+        """Mono int16 sample blocks while the microphone delivers audio (until close())."""
         test, test_name, test_lead, next_check = None, "", 0, 0.0
         for block in self._mic.stream():
             frames = np.asarray(block, dtype=np.int16).reshape(-1, self._channels)
@@ -73,6 +77,11 @@ class TableMic:
                     test = None
                     print(f"[TEST] end {test_name}", flush=True)
             yield samples
+
+
+def test_audio_waiting() -> bool:
+    """A test WAV waits in TEST_DIR: wakes the app from its sleep mode (main.py)."""
+    return TEST_DIR.is_dir() and any(TEST_DIR.glob("*.wav"))
 
 
 def _take_test_audio() -> tuple[np.ndarray | None, str]:

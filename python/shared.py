@@ -2,8 +2,11 @@
 
 Both run from this folder and talk through small JSON files in .board/:
 
-    screen.json    app -> board: {"markup", "status", "info", "addressed"}, the frame to draw
+    screen.json    app -> board: {"markup", "status", "info", "addressed", "asleep"}, the
+                   frame to draw; asleep: the sleep mode (presence.py), dark screen
     mic.json       board -> app: {"direction", "muted", "time"}, the mic array state
+    touch.json     board -> app: {"time"}, the screen was tapped: someone is there (wakes
+                   the app from its sleep mode); written anew with every tap
     settings.json  board -> app: what is set up on the screen itself (screen.py): which
                    way the glow towards the speaker points, and the names of the person
                    at the screen, which the app listens for. deploy.sh keeps it across deploys.
@@ -23,6 +26,7 @@ BOARD_DIR = Path(__file__).resolve().parents[1] / ".board"
 SCREEN_FILE = BOARD_DIR / "screen.json"
 MIC_FILE = BOARD_DIR / "mic.json"
 SETTINGS_FILE = BOARD_DIR / "settings.json"
+TOUCH_FILE = BOARD_DIR / "touch.json"
 MIC_STALE_SECONDS = 3.0  # older mic state means board_host.py stopped updating it
 MAX_NAMES = 6  # names of the person at the screen: a few (a long list costs the
 MAX_NAME_CHARS = 30  # speech recognition accuracy on all other words), each short
@@ -83,3 +87,17 @@ def read_mic_state() -> MicState:
     if not data or time.time() - data.get("time", 0) > MIC_STALE_SECONDS:
         return NO_MIC_ARRAY
     return MicState(data.get("direction"), bool(data.get("muted")))
+
+
+def write_touch() -> None:
+    """The screen was tapped (screen.py)."""
+    write_json(TOUCH_FILE, {"time": time.time()})
+
+
+def touched_at() -> int:
+    """When the screen was last tapped, as file time (0: not since the deploy);
+    a new value means a new tap."""
+    try:
+        return TOUCH_FILE.stat().st_mtime_ns
+    except FileNotFoundError:
+        return 0

@@ -17,6 +17,10 @@ When someone says one of the names of the person at the screen (set on the
 screen, see screen.py), the frame says "addressed" for ADDRESSED_SECONDS: the
 screen then shows that someone is talking to them.
 
+Asleep (nobody at the table, presence.py), the frame says "asleep" and keeps the
+last words: the screen fades them to black and the monitor goes off (board_host.py).
+Woken up, it shows a message until the next words.
+
 Frames go to shared.SCREEN_FILE as Pango markup; board_host.py draws them.
 Thread-safe: speech, knob and the refresh timer call in from different threads.
 """
@@ -50,6 +54,7 @@ KEYWORD_PAUSE = 0.4  # seconds between key word analyses (leaves CPU to speech r
 ADDRESSED_SECONDS = 6.0  # how long the screen shows that someone talks to the person
 
 MUTED_TEXT = "Microphone muted"
+ASLEEP_STATUS = "Asleep"
 
 
 @dataclass
@@ -67,6 +72,7 @@ class Display:
         self._mic = NO_MIC_ARRAY  # state of the reSpeaker array, if any
         self._message = ""  # status text instead of speech ("Listening ...")
         self._info = ""  # bottom-right corner: energy / carbon figures
+        self._asleep = False  # sleep mode: dark screen
         self._frame = None  # last frame written
         self._names: list[str] = []  # what the person at the screen is called ...
         self._name_pattern: re.Pattern | None = None  # ... found in a line by this
@@ -127,6 +133,18 @@ class Display:
             self._info = text
             self._render(time.monotonic())
 
+    def sleep(self) -> None:
+        """Nobody at the table: the screen goes dark but for the corners."""
+        with self._lock:
+            self._asleep = True
+            self._render(time.monotonic())
+
+    def wake(self, message: str) -> None:
+        """Back from sleep: `message` instead of the stale words, until the next ones."""
+        with self._lock:
+            self._asleep, self._message = False, message
+            self._render(time.monotonic())
+
     def tick(self) -> None:
         """Call a few times a second: words fade and expire, mute button is checked."""
         mic = read_mic_state()
@@ -172,6 +190,11 @@ class Display:
         self._render(now)
 
     def _render(self, now: float) -> None:
+        if self._asleep:  # the last words stay as they were: the screen fades them out
+            markup = self._frame["markup"] if self._frame else ""
+            self._write({"markup": markup, "status": ASLEEP_STATUS, "info": self._info,
+                         "addressed": False, "asleep": True})
+            return
         if self._message:
             markup = escape(self._message, quote=False)
         elif self._mic.muted:
@@ -181,8 +204,10 @@ class Display:
         else:
             markup = _board_markup(self._board.words(now))
         status = "LIVE" if self._level == LIVE else str(LEVELS[self._level])
-        frame = {"markup": markup, "status": status, "info": self._info,
-                 "addressed": now < self._addressed_until}
+        self._write({"markup": markup, "status": status, "info": self._info,
+                     "addressed": now < self._addressed_until, "asleep": False})
+
+    def _write(self, frame: dict) -> None:
         if frame != self._frame:
             self._frame = frame
             write_json(SCREEN_FILE, frame)

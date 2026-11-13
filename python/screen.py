@@ -11,6 +11,8 @@
     screen.point_to(None)    # ... gone again
     screen.addressed(True)   # shows that someone is talking to the person at the screen
     screen.addressed(False)  # ... gone again
+    screen.sleep(True)       # dark screen, only the two corner labels (dim)
+    screen.sleep(False)      # ... back to normal
     screen.close()           # closes the window
 
 The text size stays steady while the text changes a little (no jumping with every
@@ -36,7 +38,12 @@ few seconds. It opens a card with
 Changes are saved right away (shared.SETTINGS_FILE); Done, or a minute
 untouched, closes the card again.
 
-show(), point_to() and addressed() are thread-safe and return immediately; GTK
+Every tap is also passed on to the app (shared.TOUCH_FILE): someone is there. In
+the sleep mode (presence.py) the screen fades to black but for its corner labels,
+in a dim gray (then board_host.py switches the monitor off, if it can); a tap
+then only wakes the app, which brings the screen back.
+
+show(), point_to(), addressed() and sleep() are thread-safe and return immediately; GTK
 runs in its own background thread.
 """
 import math
@@ -45,7 +52,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field, fields
 
-from shared import SETTINGS_FILE, clean_names, read_json, speaker_color, write_json
+from shared import SETTINGS_FILE, clean_names, read_json, speaker_color, write_json, write_touch
 
 os.environ.setdefault("DISPLAY", ":0")
 os.environ.setdefault("XAUTHORITY", os.path.expanduser("~/.Xauthority"))
@@ -64,6 +71,7 @@ MARGIN = 0.05      # free border on each side, fraction of screen size
 STATUS_HEIGHT = 0.06  # bottom-left status label, fraction of screen height
 INFO_HEIGHT = 0.035  # bottom-right info label (smaller: it is longer)
 STATUS_GRAY = 0.55
+ASLEEP_GRAY = 0.3  # the corner labels on the dark screen of the sleep mode
 GROW_AT = 1.3      # grow the text only when it could get this much bigger
 _REF_SIZE = 100    # font size used for measuring before scaling
 
@@ -80,7 +88,8 @@ ALERT_FRAME = 0.025  # its frame around the screen, fraction of the shorter side
 ALERT_LABEL = 0.05  # its label at the top: text height, fraction of screen height
 ALERT_TEXT = "Someone is talking to you"
 
-FADE_SECONDS = 0.3  # glows and the alert fade in and out this fast
+FADE_SECONDS = 0.3  # glows and the alert fade in and out this fast (and the screen back from sleep)
+SLEEP_FADE_SECONDS = 1.0  # the screen fades to black this slowly when keep_up falls asleep
 FADE_FRAME_MS = 40  # redraw interval while something fades (none otherwise)
 
 TURN_STEP = 30     # degrees per tap on a turn button (one LED of the mic array)
@@ -196,6 +205,8 @@ class Screen:
         self._faded_at = 0.0
         self._panel = None  # what of the settings shows: None, "offer", "settings", "names"
         self._panel_timer = None  # GLib timer that hides it
+        self._asleep = False  # sleep mode ...
+        self._dark = 0.0  # ... the screen fades to black: opacity of the black
         self._ready = threading.Event()
         self._error = None
         threading.Thread(target=self._run, daemon=True).start()
@@ -221,6 +232,15 @@ class Screen:
     def addressed(self, on: bool) -> None:
         """Show that someone is talking to the person at the screen (False: stop)."""
         GLib.idle_add(self._set_addressed, bool(on))
+
+    def sleep(self, asleep: bool) -> None:
+        """Sleep mode: fade to a black screen with only the corner labels, dim (False: back)."""
+        GLib.idle_add(self._set_asleep, bool(asleep))
+
+    @property
+    def dark(self) -> bool:
+        """Asleep and faded to black: the monitor can go off. Any thread may read it."""
+        return self._dark == 1.0
 
     def close(self) -> None:
         GLib.idle_add(Gtk.main_quit)
@@ -262,6 +282,15 @@ class Screen:
         self._area.queue_draw()
         return False  # run once
 
+    def _set_asleep(self, asleep):
+        self._asleep = asleep
+        if asleep:  # nothing of the settings, no glow or alert left to fade
+            self._direction = None
+            self._glows, self._alert, self._alert_target = [], 0.0, 0.0
+            self._show_panel(None)
+        self._start_fading()
+        return False  # run once
+
     # --- the glow --------------------------------------------------------------
 
     def _set_direction(self, direction):
@@ -297,16 +326,24 @@ class Screen:
 
     def _still_fading(self):
         return (self._alert != self._alert_target
+                or self._dark != self._dark_target()
                 or any(glow.opacity != glow.target for glow in self._glows))
 
+    def _dark_target(self):
+        return 1.0 if self._asleep else 0.0
+
     def _fade(self):
-        """One step of fading glows and the alert in and out; stops when all are done."""
+        """One step of fading glows, the alert and the sleep mode's black in and out;
+        stops when all are done."""
         now = time.monotonic()
-        step, self._faded_at = (now - self._faded_at) / FADE_SECONDS, now
+        elapsed, self._faded_at = now - self._faded_at, now
+        step = elapsed / FADE_SECONDS
         for glow in self._glows:
             glow.opacity = _towards(glow.opacity, glow.target, step)
         self._glows = [glow for glow in self._glows if glow.opacity > 0 or glow.target > 0]
         self._alert = _towards(self._alert, self._alert_target, step)
+        dark_seconds = SLEEP_FADE_SECONDS if self._asleep else FADE_SECONDS
+        self._dark = _towards(self._dark, self._dark_target(), elapsed / dark_seconds)
         self._area.queue_draw()
         if self._still_fading():
             return True
@@ -406,6 +443,9 @@ class Screen:
         self._names_label.set_text(", ".join(self._settings.names) or NAMES_UNSET)
 
     def _on_tap(self, _widget, _event):
+        write_touch()  # someone is there: keeps the app awake, or wakes it
+        if self._asleep:
+            return True  # only wakes the app; it brings the screen back
         if self._panel in (None, "offer"):
             self._show_panel("offer")
         return True
@@ -494,18 +534,30 @@ class Screen:
 
     def _draw(self, widget, cr):
         width, height = widget.get_allocated_width(), widget.get_allocated_height()
-        cr.set_source_rgb(1, 1, 1)
-        cr.paint()
-        self._draw_glows(cr, width, height)
+        if self._dark < 1:
+            cr.set_source_rgb(1, 1, 1)
+            cr.paint()
+            self._draw_glows(cr, width, height)
 
-        # The status band at the bottom is always reserved, so text doesn't jump.
-        status_height = height * STATUS_HEIGHT
-        text_height = height - status_height
-        self._draw_text(cr, width / 2, text_height / 2,
-                        width * (1 - 2 * MARGIN), text_height - 2 * height * MARGIN)
-        self._draw_status(cr, height * MARGIN, height - height * MARGIN, status_height)
-        self._draw_info(cr, width - height * MARGIN, height - height * MARGIN, height * INFO_HEIGHT)
-        self._draw_alert(cr, width, height)
+            # The status band at the bottom is always reserved, so text doesn't jump.
+            text_height = height * (1 - STATUS_HEIGHT)
+            self._draw_text(cr, width / 2, text_height / 2,
+                            width * (1 - 2 * MARGIN), text_height - 2 * height * MARGIN)
+            self._draw_corners(cr, width, height, STATUS_GRAY)
+            self._draw_alert(cr, width, height)
+        if self._dark > 0:  # sleep mode: black but for the corner labels, dim
+            cr.set_source_rgba(0, 0, 0, self._dark)
+            cr.paint()
+            cr.push_group()
+            self._draw_corners(cr, width, height, ASLEEP_GRAY)
+            cr.pop_group_to_source()
+            cr.paint_with_alpha(self._dark)
+
+    def _draw_corners(self, cr, width, height, gray):
+        """The status label bottom-left, the info label bottom-right."""
+        bottom = height - height * MARGIN
+        self._draw_status(cr, height * MARGIN, bottom, height * STATUS_HEIGHT, gray)
+        self._draw_info(cr, width - height * MARGIN, bottom, height * INFO_HEIGHT, gray)
 
     def _draw_glows(self, cr, width, height):
         """Each glow: an ellipse centered on its edge point (half of it off
@@ -549,7 +601,7 @@ class Screen:
         PangoCairo.show_layout(cr, layout)
         cr.restore()
 
-    def _draw_status(self, cr, left, bottom, size):
+    def _draw_status(self, cr, left, bottom, size, gray):
         """Small gray label whose bottom-left corner is at (left, bottom)."""
         layout = _layout(cr, self._status, markup=False)
         ink, _ = layout.get_pixel_extents()
@@ -560,11 +612,11 @@ class Screen:
         cr.translate(left, bottom)
         cr.scale(scale, scale)
         cr.translate(-ink.x, -(ink.y + ink.height))
-        cr.set_source_rgb(STATUS_GRAY, STATUS_GRAY, STATUS_GRAY)
+        cr.set_source_rgb(gray, gray, gray)
         PangoCairo.show_layout(cr, layout)
         cr.restore()
 
-    def _draw_info(self, cr, right, bottom, size):
+    def _draw_info(self, cr, right, bottom, size, gray):
         """Small gray label whose bottom-right corner is at (right, bottom)."""
         layout = _layout(cr, self._info, markup=False)
         ink, _ = layout.get_pixel_extents()
@@ -575,7 +627,7 @@ class Screen:
         cr.translate(right, bottom)
         cr.scale(scale, scale)
         cr.translate(-(ink.x + ink.width), -(ink.y + ink.height))
-        cr.set_source_rgb(STATUS_GRAY, STATUS_GRAY, STATUS_GRAY)
+        cr.set_source_rgb(gray, gray, gray)
         PangoCairo.show_layout(cr, layout)
         cr.restore()
 
