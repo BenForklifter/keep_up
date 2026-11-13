@@ -1,0 +1,3 @@
+# LF everywhere: the files run on the board, and deploy.sh in bash
+* text=auto eol=lf
+*.wav binary

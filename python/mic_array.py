@@ -1,20 +1,17 @@
 """Follows who is speaking at the table with the reSpeaker XVF3800 (runs on the board).
 
 The array estimates the direction of the voice it hears (0..359 degrees) and
-whether it is speech. From that this module keeps the current speaker's
-direction: the 30-degree sector (one LED of the ring) that recent speech came
-from most, recent samples counting more. It then
+whether it is speech. The current speaker's direction is the 30-degree sector, one
+LED of the ring, that recent speech came from most, the newest counting most.
+From that, this module
 
-- lights the LED ring towards the speaker, in the color of their seat
-  (the array's own direction-of-arrival LED effect, recolored per speaker),
-- reports direction and mute button (shared.MicState) to board_host.py
-  (SpeakerFollower.state), which puts a blue glow at the screen edge towards the
-  speaker, and to the app, which says on screen when the array is muted.
+- lights the ring's LED towards the speaker in the color of their seat (the
+  array's own direction-of-arrival LED effect, recolored per speaker),
+- reports direction and mute button (shared.MicState) to board_host.py, which
+  points the glow on the screen at the speaker, and to the app.
 
-Unplugging and replugging the array is fine: it is looked for every few seconds.
-
-In the sleep mode (presence.py) the ring is off and the array is left alone: no
-polling, no looking for it, until keep_up wakes up again.
+The array may be unplugged and plugged in again at any time. While keep_up
+sleeps (presence.py) the ring is off and the array is not polled.
 """
 
 import threading
@@ -29,27 +26,27 @@ SECTOR = 30  # degrees per LED (12 LEDs)
 SPEAKER_WINDOW = 4.0  # seconds of speech the speaker direction is taken from ...
 SPEAKER_HALF_LIFE = 1.5  # ... the newest counting most
 LED_RING_COLOR = 0x000000  # the LEDs not pointing at the speaker
-HEARTBEAT_SECONDS = 1.0  # unchanged state is still re-written this often (app checks age)
+HEARTBEAT_SECONDS = 1.0  # an unchanged state is still rewritten this often (the app checks age)
 RETRY_SECONDS = 5.0
 
 
 class SpeakerFollower:
-    def __init__(self):
+    def __init__(self) -> None:
         self._array: XVF3800 | None = None
-        self._speech = deque()  # (time, direction) of recent speech
+        self._speech: deque[tuple[float, int]] = deque()  # (time, direction) of recent speech
         self._state = NO_MIC_ARRAY
         self._written_at = 0.0
-        self._led_direction = None
+        self._led_direction: int | None = None
         self._awake = threading.Event()
         self._awake.set()
 
     @property
     def state(self) -> MicState:
-        """The latest state (NO_MIC_ARRAY while none is plugged in); any thread may read it."""
+        """The latest state (NO_MIC_ARRAY without an array). Any thread."""
         return self._state
 
     def sleep(self, asleep: bool) -> None:
-        """Sleep mode on or off; any thread."""
+        """Sleep mode on or off. Any thread."""
         if asleep:
             self._awake.clear()
         else:
@@ -62,15 +59,15 @@ class SpeakerFollower:
             try:
                 with XVF3800.open() as array:
                     self._array = array
-                    major, minor, patch = array.read("VERSION")
-                    print(f"reSpeaker XVF3800 found, firmware {major}.{minor}.{patch}")
+                    version = ".".join(map(str, array.read("VERSION")))
+                    print(f"mic array: reSpeaker XVF3800 found, firmware {version}")
                     reported = None
                     array.write("LED_EFFECT", [LED_EFFECT_DOA])
                     self._follow(array)
             except OSError as e:  # not plugged in, no permission, unplugged
                 problem = _explain(e)
                 if problem != reported:
-                    print(problem)
+                    print(f"mic array: {problem}")
                     reported = problem
             finally:
                 self._array = None
@@ -116,7 +113,7 @@ class SpeakerFollower:
     def _speaker_direction(self, now: float) -> int | None:
         while self._speech and self._speech[0][0] < now - SPEAKER_WINDOW:
             self._speech.popleft()
-        votes = {}
+        votes: dict[int, float] = {}
         for heard_at, angle in self._speech:
             sector = round(angle / SECTOR) % (360 // SECTOR)
             votes[sector] = votes.get(sector, 0) + 0.5 ** ((now - heard_at) / SPEAKER_HALF_LIFE)
@@ -130,7 +127,7 @@ class SpeakerFollower:
 
 def _explain(error: OSError) -> str:
     if isinstance(error, FileNotFoundError):
-        return "No reSpeaker XVF3800 plugged in (looking again every few seconds)"
+        return "no reSpeaker XVF3800 plugged in (looking again every few seconds)"
     if isinstance(error, PermissionError):
-        return "No access to the reSpeaker's USB controls - run ./deploy.sh setup once"
+        return "no access to the reSpeaker's USB controls, run ./deploy.sh setup once"
     return f"reSpeaker XVF3800: {error!r}"

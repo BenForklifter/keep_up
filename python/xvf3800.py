@@ -58,7 +58,7 @@ _VENDOR_IN, _VENDOR_OUT = 0xC0, 0x40  # vendor request to the device, device->ho
 
 
 class XVF3800:
-    def __init__(self, fd: int):
+    def __init__(self, fd: int) -> None:
         self._fd = fd
 
     @classmethod

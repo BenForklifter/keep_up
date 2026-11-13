@@ -63,7 +63,7 @@ class _Slot:
 
 
 class KeywordBoard:
-    def __init__(self, size: int):
+    def __init__(self, size: int) -> None:
         self._candidates: dict[str, _Candidate] = {}
         self._lines: dict[int, Counter] = {}  # keyword counts per recent line, oldest first
         self._slots: list[_Slot | None] = [None] * size
@@ -126,7 +126,7 @@ class KeywordBoard:
         shown = {slot.key for slot in self._slots if slot}
         newcomers = [key for key in wanted if key not in shown]  # strongest first
         free = [i for i, slot in enumerate(self._slots) if slot is None]
-        for i, key in zip(free, newcomers):
+        for i, key in zip(free, newcomers, strict=False):
             self._slots[i] = _Slot(key, now)
 
     def _strength(self, key: str, now: float) -> float:

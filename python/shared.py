@@ -1,18 +1,12 @@
-"""What the app (in its container) and board_host.py (on the board itself) share.
+"""State shared by the app (in its container) and board_host.py (on the board itself).
 
-Both run from this folder and talk through small JSON files in .board/:
+Both run from this folder and exchange small JSON files in .board/:
 
-    screen.json    app -> board: {"markup", "status", "info", "addressed", "asleep"}, the
-                   frame to draw; asleep: the sleep mode (presence.py), dark screen
-    mic.json       board -> app: {"direction", "muted", "time"}, the mic array state
-    touch.json     board -> app: {"time"}, the screen was tapped: someone is there (wakes
-                   the app from its sleep mode); written anew with every tap
-    settings.json  board -> app: what is set up on the screen itself (screen.py): which
-                   way the glow towards the speaker points, and the names of the person
-                   at the screen, which the app listens for. deploy.sh keeps it across deploys.
-
-Speakers are told apart by where they sit: each direction around the table has
-its own color for the LED on the mic array that lights up towards them.
+    screen.json    app -> host  the frame to draw: markup, status, info, addressed, asleep
+    mic.json       host -> app  the mic array: direction, muted, time
+    touch.json     host -> app  rewritten on every tap on the screen
+    settings.json  host -> app  set up on the screen: mic array orientation, names of
+                                the person at the screen; deploy.sh keeps it
 """
 
 import colorsys
@@ -27,9 +21,11 @@ SCREEN_FILE = BOARD_DIR / "screen.json"
 MIC_FILE = BOARD_DIR / "mic.json"
 SETTINGS_FILE = BOARD_DIR / "settings.json"
 TOUCH_FILE = BOARD_DIR / "touch.json"
+
 MIC_STALE_SECONDS = 3.0  # older mic state means board_host.py stopped updating it
-MAX_NAMES = 6  # names of the person at the screen: a few (a long list costs the
-MAX_NAME_CHARS = 30  # speech recognition accuracy on all other words), each short
+# A few short names: every name listened for costs recognition accuracy on other words.
+MAX_NAMES = 6
+MAX_NAME_CHARS = 30
 
 
 class MicState(NamedTuple):
@@ -41,13 +37,13 @@ NO_MIC_ARRAY = MicState(direction=None, muted=False)
 
 
 def speaker_color(direction: int) -> int:
-    """0xRRGGBB for a speaker direction: the hue goes once around the color wheel."""
+    """Color of a seat as 0xRRGGBB: the hue goes once around the table."""
     r, g, b = colorsys.hsv_to_rgb(direction % 360 / 360, 1.0, 1.0)
     return (round(r * 255) << 16) | (round(g * 255) << 8) | round(b * 255)
 
 
 def write_json(path: Path, data: dict) -> None:
-    """Atomic write, so the other side never reads half a file."""
+    """Write atomically, so the other side never reads half a file."""
     path.parent.mkdir(exist_ok=True)
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(data))
@@ -61,20 +57,22 @@ def read_json(path: Path) -> dict | None:
         return None
 
 
-def clean_names(names) -> list[str]:
-    """Names as typed or saved -> trimmed, without empty ones, repeats or commas
-    (speech recognition separates its terms with them), at most MAX_NAMES."""
-    clean = []
+def clean_names(names: object) -> list[str]:
+    """Names as typed or loaded: trimmed, at most MAX_NAMES, without empty ones,
+    repeats, or the separators of the recognizer's hotword list (, and /)."""
+    clean: list[str] = []
     for name in names if isinstance(names, list) else []:
-        if isinstance(name, str):
-            name = " ".join(name.replace(",", " ").split())[:MAX_NAME_CHARS].strip()
-            if name and name.lower() not in (n.lower() for n in clean):
-                clean.append(name)
+        if not isinstance(name, str):
+            continue
+        name = " ".join(name.replace(",", " ").replace("/", " ").split())
+        name = name[:MAX_NAME_CHARS].strip()
+        if name and name.lower() not in (n.lower() for n in clean):
+            clean.append(name)
     return clean[:MAX_NAMES]
 
 
 def read_names() -> list[str]:
-    """What the person at the screen is called ("Mary", "Grandma"), set on the screen."""
+    """What the person at the screen is called ("Mary", "Grandma")."""
     return clean_names((read_json(SETTINGS_FILE) or {}).get("names"))
 
 
@@ -90,13 +88,12 @@ def read_mic_state() -> MicState:
 
 
 def write_touch() -> None:
-    """The screen was tapped (screen.py)."""
+    """Report a tap on the screen."""
     write_json(TOUCH_FILE, {"time": time.time()})
 
 
 def touched_at() -> int:
-    """When the screen was last tapped, as file time (0: not since the deploy);
-    a new value means a new tap."""
+    """When the screen was last tapped, as file time (0: never); a new value is a new tap."""
     try:
         return TOUCH_FILE.stat().st_mtime_ns
     except FileNotFoundError:

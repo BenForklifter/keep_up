@@ -1,21 +1,15 @@
-"""Runs directly on the board, next to the app container, for the hardware the
+"""Runs on the board itself, next to the app container, for the hardware the
 container cannot reach: the monitor and the reSpeaker's USB controls.
 
-deploy.sh starts it with the board's own python3 (standard library + GTK only).
+deploy.sh starts it with the board's own python3 (standard library and GTK only).
 
-- Screen: draws the frames the app writes to .board/screen.json.
-- Mic array: follows who is speaking with the reSpeaker XVF3800 (mic_array.py)
-  and reports it to the app in .board/mic.json.
-- Both: a blue glow at the screen edge points towards whoever is speaking. It goes a
-  few seconds after they stop, and is off while the array is muted. Which way
-  it points is set on the screen itself: tap it (screen.py).
-- When the app hears someone say a name of the person at the screen (also set on
-  the screen), the screen shows that they are being talked to.
-- Sleep mode (the app's frame says "asleep", presence.py): the screen fades to
-  black, then the monitor goes to standby (monitor.py); the mic array's ring goes
-  off and it is no longer polled. A tap on the screen wakes the app
-  (.board/touch.json, screen.py); waking, the monitor comes on first, then the
-  picture fades in.
+- Screen (screen.py): draws the frames the app writes to .board/screen.json, with
+  a glow at the screen edge towards whoever is speaking.
+- Mic array (mic_array.py): follows who is speaking and reports it to the app in
+  .board/mic.json.
+- Sleep mode: when the app's frame says "asleep", the screen fades to black, then
+  the monitor goes to standby (monitor.py) and the mic array is left alone. Waking
+  up, the monitor comes on first, then the picture fades in.
 """
 
 import signal
@@ -29,8 +23,8 @@ from screen import Screen
 from shared import SCREEN_FILE, read_json
 
 POLL_SECONDS = 0.05
-# Asleep, the monitor itself goes to standby: on the 7" Elecrow that saves ~2 of its
-# 2.5 W. False: the screen only goes dark, with "Asleep" and CPU / RAM at the bottom.
+# Asleep, put the monitor itself into standby: on the 7" Elecrow that saves ~2 of its
+# 2.5 W. False: the screen only goes dark, showing "Asleep" and the CPU and RAM figures.
 MONITOR_OFF = True
 
 
@@ -39,11 +33,11 @@ def open_monitor() -> Monitor | None:
         return None
     try:
         monitor = Monitor()
-        monitor.power(True)  # in case it was left off
-        return monitor
     except OSError as e:
-        print(f"Monitor stays on while asleep, only dark: {e}")
+        print(f"monitor: stays on while asleep, only dark ({e})")
         return None
+    monitor.power(True)  # in case it was left off
+    return monitor
 
 
 def show_forever(screen: Screen, follower: SpeakerFollower, monitor: Monitor | None) -> None:
@@ -58,12 +52,16 @@ def show_forever(screen: Screen, follower: SpeakerFollower, monitor: Monitor | N
             last_frame = changed
             frame = read_json(SCREEN_FILE)
             if frame:
-                screen.show(frame.get("markup", ""), frame.get("status", ""), markup=True,
-                            info=frame.get("info", ""))
+                screen.show(
+                    frame.get("markup", ""),
+                    frame.get("status", ""),
+                    markup=True,
+                    info=frame.get("info", ""),
+                )
                 screen.addressed(bool(frame.get("addressed")))
                 if bool(frame.get("asleep")) != asleep:
                     asleep = not asleep
-                    if monitor_off:  # waking: the monitor first, the picture fades in
+                    if monitor_off:  # waking: the monitor first, then the picture fades in
                         monitor.power(True)
                         monitor_off = False
                     screen.sleep(asleep)
@@ -80,8 +78,8 @@ def show_forever(screen: Screen, follower: SpeakerFollower, monitor: Monitor | N
         time.sleep(POLL_SECONDS)
 
 
-def main():
-    screen = Screen()  # before Monitor(): GTK's X error handler then ignores its errors (no exit)
+def main() -> None:
+    screen = Screen()  # before Monitor(): GTK's X error handler then ignores its errors
     screen.show("Starting ...")
     monitor = open_monitor()
     follower = SpeakerFollower()

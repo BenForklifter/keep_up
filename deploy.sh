@@ -1,32 +1,33 @@
 #!/usr/bin/env bash
-# Deploy this App Lab app to the Arduino UNO Q and (re)start it.
+# Deploy keep_up to an Arduino UNO Q over ssh and (re)start it.
 #
-#   ./deploy.sh             copy working copy to the board, rebuild/flash, start
-#   ./deploy.sh logs        follow the app's logs on the board
-#   ./deploy.sh board-logs  follow the logs of board_host.py (screen, reSpeaker)
-#   ./deploy.sh stop        stop the app (and board_host.py)
-#   ./deploy.sh setup       once per board: allow board_host.py to use the
+#   ./deploy.sh             copy the working tree to the board, build and flash the
+#                           sketch, start the app and board_host.py
+#   ./deploy.sh logs        follow the app's log
+#   ./deploy.sh board-logs  follow the log of board_host.py (screen, mic array)
+#   ./deploy.sh stop        stop the app and board_host.py
+#   ./deploy.sh setup       once per board: give board_host.py access to the
 #                           reSpeaker's USB controls (asks for the sudo password)
 #
-# Override the board address if its IP changed:
-#   BOARD=arduino@192.168.x.y ./deploy.sh
-# (find it on the board's monitor with `hostname -I`)
+# BOARD is the board's ssh target, e.g. BOARD=arduino@192.168.1.20 ./deploy.sh
+# (`hostname -I` on the board shows its address).
 set -euo pipefail
 
-# IP, because the .local name keeps changing on the busy hackathon network
-BOARD="${BOARD:-arduino@192.168.1.216}"
+if [[ -z "${BOARD:-}" ]]; then
+  echo "BOARD is not set, e.g. BOARD=arduino@192.168.1.20 $0 ${1:-}" >&2
+  exit 1
+fi
 APP="keep_up"
 DIR="/home/arduino/ArduinoApps/$APP"
-# Not in git, kept on the board across deploys: the speech models, which the app
-# downloads on its first start (see python/speech.py), and the screen settings,
-# made on the screen itself (see python/screen.py).
+# Kept on the board across deploys, not in git: the speech model (downloaded on the
+# first start, python/speech.py) and the settings made on the screen (python/screen.py).
 KEEP="models .board/settings.json"
 UDEV_RULE='SUBSYSTEM=="usb", ATTRS{idVendor}=="2886", ATTRS{idProduct}=="001a", MODE="0666"'
 
 cd "$(dirname "$0")"
 
 # board_host.py runs on the board itself: the app container can reach neither the
-# display nor the reSpeaker's USB controls
+# monitor nor the reSpeaker's USB controls.
 PIDFILE="$DIR/.board/host.pid"
 STOP_HOST="if [ -f '$PIDFILE' ]; then kill \"\$(cat '$PIDFILE')\" 2>/dev/null || true; rm -f '$PIDFILE'; fi"
 
@@ -36,20 +37,18 @@ read -r -d '' REMOTE_SCRIPT <<EOF || true
 set -e
 arduino-app-cli app stop '$DIR' </dev/null >/dev/null 2>&1 || true
 $STOP_HOST
-# Its predecessor from older deploys ([s]: the pattern must not match this script itself)
-pkill -f 'python/[s]creen_host.py' || true
 mkdir -p '$DIR' && cd '$DIR'
-# Remove old files (so deleted/renamed files disappear), keep App Lab's cache and the models
+# Remove old files, so that deleted and renamed ones disappear; keep App Lab's cache and KEEP
 find . -mindepth 1 \\( -path ./.cache $PRUNE\\) -prune -o -type f -exec rm -f {} +
 tar -xzf -
-echo '>> Starting board_host.py (screen, reSpeaker)'
+echo '>> Starting board_host.py (screen, mic array)'
 mkdir -p .board
 DISPLAY=:0 setsid nohup python3 -u '$DIR/python/board_host.py' > .board/host.log 2>&1 < /dev/null &
 echo \$! > '$PIDFILE'
 sleep 2
 kill -0 "\$(cat '$PIDFILE')" 2>/dev/null || { echo '!! board_host.py failed:'; tail -5 .board/host.log; }
 grep -h 'reSpeaker' .board/host.log | sed 's/^/>> /' || true
-echo '>> Starting app (builds + flashes sketch, starts python)'
+echo '>> Starting the app (builds and flashes the sketch, starts the Python app)'
 arduino-app-cli app start '$DIR' </dev/null
 EOF
 

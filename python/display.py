@@ -1,25 +1,19 @@
 """What the monitor on the table shows.
 
 The knob picks a level: the 1, 2, 3, 4, 6 or 8 key words of the conversation
-(the keyword board, see board.py) or, at the top, LIVE: the running transcript.
-The level is shown small in the bottom-left corner, the energy and carbon
-figures (sci.py) in the bottom-right one.
+(the keyword board, board.py) or, at the top, LIVE: the running transcript. The
+level is shown small in the bottom-left corner, CPU and RAM (stats.py) in the
+bottom-right one.
 
-Fresh words are black and turn gray as they age, so a glance tells what was
-just said and what is the topic from before. In the transcript the line being
-spoken is black, earlier lines gray.
+Fresh words are black and turn gray as they age, so a glance tells what was just
+said and what the topic was before. In the transcript the line being spoken is
+black, earlier lines gray. While the mic array's mute button is on, the screen
+says so.
 
-With the reSpeaker mic array, a blue glow at the screen edge points towards whoever
-is speaking (drawn by board_host.py, straight from the array; set up by tapping
-the screen). While the array's mute button is on, the screen says so.
-
-When someone says one of the names of the person at the screen (set on the
-screen, see screen.py), the frame says "addressed" for ADDRESSED_SECONDS: the
-screen then shows that someone is talking to them.
-
-Asleep (nobody at the table, presence.py), the frame says "asleep" and keeps the
-last words: the screen fades them to black and the monitor goes off (board_host.py).
-Woken up, it shows a message until the next words.
+When someone says one of the names of the person at the screen, the frame says
+"addressed" for ADDRESSED_SECONDS and the screen shows that someone is talking
+to them. Asleep (presence.py), the frame says "asleep" and keeps the last words
+for the screen to fade out; woken up, it shows a message until the next words.
 
 Frames go to shared.SCREEN_FILE as Pango markup; board_host.py draws them.
 Thread-safe: speech, knob and the refresh timer call in from different threads.
@@ -64,14 +58,14 @@ class _Line:
 
 
 class Display:
-    def __init__(self):
+    def __init__(self) -> None:
         self._lock = threading.Lock()
         self._level = START_LEVEL
         self._board = KeywordBoard(LEVELS[START_LEVEL])
         self._lines: dict[int, _Line] = {}  # transcript, oldest first
         self._mic = NO_MIC_ARRAY  # state of the reSpeaker array, if any
         self._message = ""  # status text instead of speech ("Listening ...")
-        self._info = ""  # bottom-right corner: energy / carbon figures
+        self._info = ""  # bottom-right corner: CPU and RAM
         self._asleep = False  # sleep mode: dark screen
         self._frame = None  # last frame written
         self._names: list[str] = []  # what the person at the screen is called ...
@@ -102,7 +96,7 @@ class Display:
             if name and line_id != self._addressed_line:
                 self._addressed_line = line_id
                 self._addressed_until = now + ADDRESSED_SECONDS
-                print(f"👋 talking to you: {name!r} in {text!r}")
+                print(f'display: addressed by "{name}" in "{text}"')
             self._render(now)
         self._new_text.set()
 
@@ -128,7 +122,7 @@ class Display:
             self._render(time.monotonic())
 
     def set_info(self, text: str) -> None:
-        """Small text for the bottom-right corner (energy / carbon figures)."""
+        """Small text for the bottom-right corner (CPU and RAM)."""
         with self._lock:
             self._info = text
             self._render(time.monotonic())
@@ -174,7 +168,7 @@ class Display:
                     traceback.print_exc()  # keep going with the next lines
                     continue
                 if line.complete:
-                    print(f"   key words: {', '.join(k.text for k in found) or '-'}")
+                    print(f"keywords: {', '.join(k.text for k in found) or '-'}")
                 with self._lock:
                     now = time.monotonic()
                     self._board.hear(line_id, found, now)
@@ -257,5 +251,5 @@ def _fade(age: float) -> float:
 
 def _in_gray(text: str, gray: float) -> str:
     """Text in a gray level (0 = black)."""
-    level = round(gray * 255)
-    return f"<span foreground='#{level:02x}{level:02x}{level:02x}'>{escape(text, quote=False)}</span>"
+    level = f"{round(gray * 255):02x}"
+    return f"<span foreground='#{level * 3}'>{escape(text, quote=False)}</span>"

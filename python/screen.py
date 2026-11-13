@@ -1,51 +1,39 @@
-"""Fullscreen text display driver for the attached monitor.
+"""Fullscreen display on the monitor (runs on the board, GTK).
 
-    from screen import Screen
+    screen = Screen()           # opens a white fullscreen window
+    screen.show("Lisbon")       # the text as large as it fits, black on white
+    screen.show("Lisbon", status="3", info="CPU 20 %")   # ... with small corner labels
+    screen.show("<span foreground='#999'>old</span> new", markup=True)
+    screen.point_to(90)         # glow at the edge towards the speaker (mic array degrees)
+    screen.point_to(None)       # ... fades out
+    screen.addressed(True)      # someone is talking to the person at the screen
+    screen.sleep(True)          # fades to black but for the corner labels
 
-    screen = Screen()        # opens a white fullscreen window
-    screen.show("Apfel")     # draws the text as large as possible (black, centered)
-    screen.show("Apfel", status="3")  # ... plus a small label in the bottom-left corner
-    screen.show("Apfel", info="2.4 W")  # ... and/or one in the bottom-right corner
-    screen.show("<span foreground='#999'>alt</span> neu", markup=True)  # Pango markup
-    screen.point_to(90)      # a glow at the edge towards the speaker (mic array degrees)
-    screen.point_to(None)    # ... gone again
-    screen.addressed(True)   # shows that someone is talking to the person at the screen
-    screen.addressed(False)  # ... gone again
-    screen.sleep(True)       # dark screen, only the two corner labels (dim)
-    screen.sleep(False)      # ... back to normal
-    screen.close()           # closes the window
+The text size stays steady while the text changes a little: it shrinks at once
+when the text no longer fits and grows only when it could get clearly bigger.
 
-The text size stays steady while the text changes a little (no jumping with every
-new word); it shrinks at once when text no longer fits and grows only when it
-could get clearly bigger.
+The glow is a soft blue spot on the screen edge, strongest at the edge and fading
+out along it and into the screen. When someone says a name of the person at the
+screen, an orange frame with "Someone is talking to you" appears and the glow
+turns orange.
 
-The glow is a soft blue spot on the screen edge, like a blurred blob: strongest
-right at the edge, fading out smoothly along it and well into the screen. It
-fades in and out; when it moves, the old one fades while the new one appears.
+Tapping the screen shows a Settings button for a few seconds. It opens a card to
+set up, once,
+- the mic array's orientation: a picture of the array as seen from in front of
+  the screen, with its USB cable and the LED towards whoever speaks. Turn and
+  flip it until the cable runs as on the table; then the glow points at the speaker.
+- the names of the person at the screen ("Mary, Grandma"), typed on an on-screen
+  keyboard or a real one.
+Changes are saved at once (shared.SETTINGS_FILE); Done, or a minute untouched,
+closes the card.
 
-Someone talking to the person at the screen (they said one of the person's names)
-is hard to miss: an orange frame around the screen with "Someone is talking to
-you" at the top, and the glow towards the speaker turns orange too.
+Every tap is passed on to the app (shared.TOUCH_FILE): someone is there. While
+asleep, a tap only wakes the app, which brings the screen back.
 
-Setting it up, once: tap (or click) the screen and a Settings button shows for a
-few seconds. It opens a card with
-- a picture of the mic array as seen from in front of the screen - a disc with
-  its USB cable, and the LED towards whoever speaks lit like on the array - and
-  buttons to turn and flip it until the cable runs as on the table; then the
-  glow points at whoever speaks;
-- the names the person at the screen is called by ("Mary, Grandma"), typed on an
-  on-screen keyboard (or a real one) in a card of its own.
-Changes are saved right away (shared.SETTINGS_FILE); Done, or a minute
-untouched, closes the card again.
-
-Every tap is also passed on to the app (shared.TOUCH_FILE): someone is there. In
-the sleep mode (presence.py) the screen fades to black but for its corner labels,
-in a dim gray (then board_host.py switches the monitor off, if it can); a tap
-then only wakes the app, which brings the screen back.
-
-show(), point_to(), addressed() and sleep() are thread-safe and return immediately; GTK
-runs in its own background thread.
+show(), point_to(), addressed() and sleep() are thread-safe and return at once;
+GTK runs in its own thread.
 """
+
 import math
 import os
 import threading
@@ -67,56 +55,58 @@ gi.require_version("PangoCairo", "1.0")
 from gi.repository import Gdk, GLib, Gtk, Pango, PangoCairo  # noqa: E402
 
 FONT = "DejaVu Sans Bold"
-MARGIN = 0.05      # free border on each side, fraction of screen size
-STATUS_HEIGHT = 0.06  # bottom-left status label, fraction of screen height
+MEASURE_FONT_SIZE = 100  # text is laid out at this size, then scaled to fit
+MARGIN = 0.05  # free border on each side, fraction of the screen size
+STATUS_HEIGHT = 0.06  # bottom-left status label, fraction of the screen height
 INFO_HEIGHT = 0.035  # bottom-right info label (smaller: it is longer)
 STATUS_GRAY = 0.55
 ASLEEP_GRAY = 0.3  # the corner labels on the dark screen of the sleep mode
-GROW_AT = 1.3      # grow the text only when it could get this much bigger
-_REF_SIZE = 100    # font size used for measuring before scaling
+GROW_AT = 1.3  # grow the text only when it could get this much bigger
 
-GLOW_ALONG = 0.42  # glow towards the speaker: reach along the edge to either side,
-                   # fraction of the shorter screen side ...
-GLOW_DEPTH = 0.22  # ... and into the screen (behind the text there, but light by then)
-GLOW_COLOR = (0x0F / 255, 0x6C / 255, 0xBD / 255)  # right at the edge: Fluent blue #0f6cbd,
-                                                   # the same as the Done button (UI_CSS)
-GLOW_STEPS = 16    # gradient stops of its fade (more = smoother)
+# The glow towards the speaker reaches along the edge to either side, and into the
+# screen, as fractions of the shorter screen side.
+GLOW_ALONG = 0.42
+GLOW_DEPTH = 0.22
+GLOW_COLOR = (0x0F / 255, 0x6C / 255, 0xBD / 255)  # #0f6cbd, as the Done button (UI_CSS)
+GLOW_STEPS = 16  # gradient stops of its fade
 
-ALERT_COLOR = (0xDA / 255, 0x3B / 255, 0x01 / 255)  # someone talks to the person:
-                                                    # Fluent dark orange #da3b01
-ALERT_FRAME = 0.025  # its frame around the screen, fraction of the shorter side
-ALERT_LABEL = 0.05  # its label at the top: text height, fraction of screen height
+ALERT_COLOR = (0xDA / 255, 0x3B / 255, 0x01 / 255)  # #da3b01: someone talks to the person
+ALERT_FRAME = 0.025  # frame around the screen, fraction of the shorter side
+ALERT_LABEL = 0.05  # label at the top: text height, fraction of the screen height
 ALERT_TEXT = "Someone is talking to you"
 
-FADE_SECONDS = 0.3  # glows and the alert fade in and out this fast (and the screen back from sleep)
-SLEEP_FADE_SECONDS = 1.0  # the screen fades to black this slowly when keep_up falls asleep
-FADE_FRAME_MS = 40  # redraw interval while something fades (none otherwise)
+FADE_SECONDS = 0.3  # glows, the alert, and the screen coming back from sleep
+SLEEP_FADE_SECONDS = 1.0  # the screen fading to black when keep_up falls asleep
+FADE_FRAME_MS = 40  # redraw interval while something fades
 
-TURN_STEP = 30     # degrees per tap on a turn button (one LED of the mic array)
+TURN_STEP = 30  # degrees per tap on a turn button: one LED of the mic array
 OFFER_SECONDS = 8  # the Settings button goes again after this long ...
 SETTINGS_SECONDS = 60  # ... a settings card after this long untouched
 OFFER_BOTTOM = 96  # pixels between the Settings button and the bottom edge
 DIRECTION_TITLE = "Speaker direction"
-DIRECTION_TEXT = ("Turn the picture until the cable runs\n"
-                  "as on the table, seen from in front of\n"
-                  "the screen. Then let someone talk: the\n"
-                  "glow should point at them, else Flip.")
+DIRECTION_TEXT = (
+    "Turn the picture until the cable runs\n"
+    "as on the table, seen from in front of\n"
+    "the screen. Then let someone talk: the\n"
+    "glow should point at them, else Flip."
+)
 
-# The picture of the mic array in the settings, seen from above (the screen's viewer
-# at the bottom): a dark disc with its ring of 12 LEDs and the USB cable.
-CABLE_DIRECTION = 0  # where the cable leaves the array, in mic array degrees: talk
-                     # from the cable's side and read "direction" in .board/mic.json
+# The mic array in the settings, seen from above with the screen's viewer at the
+# bottom: a dark disc with its ring of 12 LEDs and the USB cable.
+CABLE_DIRECTION = 0  # mic array degrees towards the cable: talk from there, see .board/mic.json
 PREVIEW_SIZE = 168  # pixels
 PREVIEW_BODY = (0x24 / 255,) * 3  # #242424
 PREVIEW_LED = (0x75 / 255,) * 3  # #757575, LEDs that are off
 PREVIEW_CABLE = (0x61 / 255,) * 3  # #616161
 LEDS = 12
 NAMES_TITLE = "Name"
-NAMES_TEXT = ("What is the person at this screen called? Several names\n"
-              "with commas between them, e.g. \"Mary, Grandma\". When someone\n"
-              "says one, the screen shows they are talking to them.")
+NAMES_TEXT = (
+    "What is the person at this screen called? Several names\n"
+    'with commas between them, e.g. "Mary, Grandma". When someone\n'
+    "says one, the screen shows they are talking to them."
+)
 NAMES_UNSET = "Not set"
-KEY_ROWS = ("QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM,-")  # on-screen keyboard (+ Backspace)
+KEY_ROWS = ("QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM,-")  # on-screen keyboard, plus Backspace
 BACKSPACE = "⌫"
 UI_CSS = b"""
 .ui { font-family: "Segoe UI", "Noto Sans", "DejaVu Sans", sans-serif; }
@@ -189,7 +179,7 @@ class _Glow:
 
 
 class Screen:
-    def __init__(self):
+    def __init__(self) -> None:
         self._text = ""
         self._status = ""
         self._info = ""
@@ -241,9 +231,6 @@ class Screen:
     def dark(self) -> bool:
         """Asleep and faded to black: the monitor can go off. Any thread may read it."""
         return self._dark == 1.0
-
-    def close(self) -> None:
-        GLib.idle_add(Gtk.main_quit)
 
     # --- GTK thread ---------------------------------------------------------
 
@@ -356,7 +343,9 @@ class Screen:
         """The Settings button near the bottom, the card it opens in the middle,
         and the card for typing the names (all hidden at first). Their margins
         leave room for the shadows."""
-        self._offer = _styled(Gtk.Box(halign=Gtk.Align.CENTER, valign=Gtk.Align.END, margin=16), "ui")
+        self._offer = _styled(
+            Gtk.Box(halign=Gtk.Align.CENTER, valign=Gtk.Align.END, margin=16), "ui"
+        )
         self._offer.set_margin_bottom(OFFER_BOTTOM)
         self._offer.add(_button("Settings", lambda: self._show_panel("settings"), "offer"))
 
@@ -527,7 +516,8 @@ class Screen:
             x, y = _unit(self._settings.angle(direction))
             on = lit is not None and round(lit * LEDS / 360) % LEDS == led
             cr.set_source_rgb(*(_rgb(speaker_color(direction)) if on else PREVIEW_LED))
-            cr.arc(x * radius * 0.75, y * radius * 0.75, size * (0.035 if on else 0.022), 0, 2 * math.pi)
+            led_radius = size * (0.035 if on else 0.022)
+            cr.arc(x * radius * 0.75, y * radius * 0.75, led_radius, 0, 2 * math.pi)
             cr.fill()
 
     # --- drawing ----------------------------------------------------------------
@@ -565,7 +555,10 @@ class Screen:
         someone is talking to the person: it points at who it is."""
         side = min(width, height)
         along, depth = side * GLOW_ALONG, side * GLOW_DEPTH
-        color = [blue + (orange - blue) * self._alert for blue, orange in zip(GLOW_COLOR, ALERT_COLOR)]
+        color = [
+            blue + (orange - blue) * self._alert
+            for blue, orange in zip(GLOW_COLOR, ALERT_COLOR, strict=True)
+        ]
         for glow in self._glows:
             x, y, on_side_edge = _edge_point(glow.angle, width, height)
             spot = cairo.RadialGradient(0, 0, 0, 0, 0, 1)
@@ -733,7 +726,7 @@ def _rgb(color):
 def _layout(cr, text, markup):
     layout = PangoCairo.create_layout(cr)
     font = Pango.FontDescription(FONT)
-    font.set_size(_REF_SIZE * Pango.SCALE)
+    font.set_size(MEASURE_FONT_SIZE * Pango.SCALE)
     layout.set_font_description(font)
     layout.set_alignment(Pango.Alignment.CENTER)
     if markup:

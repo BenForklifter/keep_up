@@ -1,26 +1,13 @@
 """keep_up: the key words of a dinner conversation on a display on the table.
 
-Against Dinner Table Syndrome: at a table where everyone talks at once, people
-who are deaf or hard of hearing lose the thread. A glance at the display shows
-the topic and what was just said.
+Entry point of the App Lab app; README.md describes the whole system. This module
+wires the parts together and handles the Bridge calls from the sketch:
 
-The reSpeaker XVF3800 mic array in the middle of the table (or any USB
-microphone, microphone.py) feeds Kroko (offline speech recognition on the
-board's CPU, speech.py). The keyword board (board.py) keeps the N most important
-words of the talk; the Modulino Knob on the sketch side picks N, or the full live
-transcript (display.py). Turning sends "knob_turned", pressing "knob_pressed"
-over the Bridge. A blue glow at the screen edge points towards whoever is speaking
-(mic array, board_host.py).
-When someone says a name of the person at the screen (set on the screen itself,
-screen.py), the screen shows that they are being talked to; speech recognition
-listens for these names in particular.
-The bottom-right corner shows the estimated power and carbon footprint (sci.py).
+    knob_turned(steps)  more or fewer key words, or the live transcript at the top
+    knob_pressed()      jump between the single most important word and the transcript
+    moved(milli_g)      the table was bumped: someone is there
 
-When nobody has been at the table for a while, keep_up sleeps to save power:
-microphone and speech recognition off, monitor in standby (board_host.py). Speech
-would not wake it then; a tap on the screen, a bump of the table (the Modulino
-Movement on the sketch side sends "moved") or the knob does (presence.py). A knob
-turn or press that wakes it does nothing else.
+An input that wakes keep_up from its sleep mode (presence.py) does nothing else.
 """
 
 import threading
@@ -31,13 +18,14 @@ from arduino.app_utils import App, Bridge
 from display import Display
 from microphone import TableMic, test_audio_waiting
 from presence import Presence
-from sci import CarbonMeter
 from shared import read_names, touched_at
 from speech import SpeechToText
+from stats import SystemStats
 
-REFRESH_SECONDS = 0.25  # how often the board is re-arranged (fading, dwell times)
-SCI_SAMPLE_SECONDS = 5.0  # how often power is estimated and the corner updated
-SCI_LOG_SECONDS = 60.0  # how often the carbon figures go to the app log
+REFRESH_SECONDS = 0.25  # how often the screen is updated (fading, dwell times, names)
+STATS_SECONDS = 5.0  # how often CPU and RAM are measured for the screen corner ...
+STATS_LOG_SECONDS = 60.0  # ... and how often they go to the app log
+WAKE_CHECK_SECONDS = 60.0
 NO_MIC_RETRY_SECONDS = 60.0
 
 LISTENING = "Listening ..."
@@ -63,11 +51,11 @@ presence = Presence(on_sleep=go_to_sleep, on_wake=wake_up)
 def open_mic() -> TableMic | None:
     try:
         new_mic = TableMic()
-        print(f"Microphone: {new_mic.name}")
-        return new_mic
     except Exception as e:
-        print(f"No microphone ({e!r})")
+        print(f"mic: none found ({e!r})")
         return None
+    print(f"mic: {new_mic.name}")
+    return new_mic
 
 
 def on_line(line_id: int, text: str, complete: bool) -> None:
@@ -75,7 +63,7 @@ def on_line(line_id: int, text: str, complete: bool) -> None:
     display.heard(line_id, text, complete)
 
 
-def on_knob_turned(steps) -> None:
+def on_knob_turned(steps: int) -> None:
     print(f"knob: turned {steps}")
     if not presence.seen("knob"):
         display.turn(int(steps))
@@ -87,11 +75,11 @@ def on_knob_pressed() -> None:
         display.press()
 
 
-def on_moved(milli_g) -> None:
+def on_moved(milli_g: int) -> None:
     presence.seen(f"table bumped ({milli_g} mg)")
 
 
-def refresh_forever():
+def refresh_forever() -> None:
     touched = touched_at()
     while True:
         time.sleep(REFRESH_SECONDS)
@@ -99,7 +87,7 @@ def refresh_forever():
             touched = now_touched
             presence.seen("screen tapped")
         if not presence.awake and test_audio_waiting():
-            presence.seen("test audio (tools/eval)")  # played through the microphone
+            presence.seen("test audio")  # played instead of the microphone
         presence.check()
         if not presence.awake:
             continue  # nothing moves on the dark screen
@@ -110,15 +98,37 @@ def refresh_forever():
         display.tick()
 
 
-def measure_forever():
-    meter, last_log = CarbonMeter(), time.monotonic()
+def measure_forever() -> None:
+    stats, last_log = SystemStats(), time.monotonic()
     while True:
-        time.sleep(SCI_SAMPLE_SECONDS)
-        meter.sample()
-        display.set_info(meter.label())  # also while asleep (with the monitor on: dark screen)
-        if time.monotonic() - last_log >= SCI_LOG_SECONDS:
+        time.sleep(STATS_SECONDS)
+        stats.sample()
+        display.set_info(stats.label())  # also while asleep, for a monitor left on
+        if time.monotonic() - last_log >= STATS_LOG_SECONDS:
             last_log = time.monotonic()
-            print(meter.log_line() + ("" if presence.awake else " (asleep)"))
+            print(stats.log_line() + ("" if presence.awake else " (asleep)"))
+
+
+def loop() -> None:
+    """Listen while awake; the microphone is opened anew after each sleep."""
+    global mic
+    if not presence.wait_awake(timeout=WAKE_CHECK_SECONDS):
+        return
+    mic = open_mic()
+    if mic is None:
+        display.message("No microphone - plug one in")
+        time.sleep(NO_MIC_RETRY_SECONDS)
+        return
+    if presence.awake:  # it may have fallen asleep while the microphone opened
+        display.message(LISTENING)
+        try:
+            stt.run(mic.blocks())  # returns once the microphone stops: asleep, unplugged
+        except Exception as e:
+            print(f"speech: stopped ({e!r})")
+    mic.close()
+    if presence.awake:
+        print("speech: restarting")
+        time.sleep(1)
 
 
 Bridge.provide("knob_turned", on_knob_turned)
@@ -129,32 +139,9 @@ threading.Thread(target=measure_forever, daemon=True).start()
 
 display.message("Loading speech model ...")
 try:
-    stt = SpeechToText(on_line)  # first start: downloads the model, needs internet once
+    stt = SpeechToText(on_line)  # the first start downloads the model: needs internet once
 except Exception:
     display.message("Speech model failed to load - see app logs")
     raise
-
-
-def loop():
-    """Listen while awake; the microphone is opened anew after each sleep."""
-    global mic
-    if not presence.wait_awake(timeout=60):
-        return  # asleep: nothing to do
-    mic = open_mic()
-    if mic is None:
-        display.message("No microphone - plug one in")
-        time.sleep(NO_MIC_RETRY_SECONDS)  # then look again
-        return
-    if presence.awake:  # else it fell asleep while the microphone opened
-        display.message(LISTENING)
-        try:
-            stt.run(mic.blocks())  # returns once the microphone stops: asleep, unplugged
-        except Exception as e:
-            print(f"Speech recognition stopped: {e!r}")
-    mic.close()
-    if presence.awake:
-        print("Restarting speech recognition")
-        time.sleep(1)
-
 
 App.run(user_loop=loop)
