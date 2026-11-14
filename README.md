@@ -1,8 +1,10 @@
-# keep_up
+# Keep Up
 
-keep_up shows the key words of a dinner conversation on a small screen on the
+Keep Up shows the key words of a dinner conversation on a small screen on the
 table, so that people who are deaf or hard of hearing can follow when everyone
 talks at once. It runs offline on an [Arduino UNO Q](https://docs.arduino.cc/hardware/uno-q/).
+
+![keep_up on a table, next to the mic array and the UNO Q: the screen shows the key words of the conversation, "beer dinner", then "today dinner", then "today chicken"](docs/demo.gif)
 
 ## Features
 
@@ -17,6 +19,8 @@ talks at once. It runs offline on an [Arduino UNO Q](https://docs.arduino.cc/har
   ([spaCy](https://spacy.io)) run on the board.
 
 ## Hardware
+
+![keep_up on a table: the screen, the mic array, the USB-C hub, the UNO Q and the knob](docs/keep_up.jpg)
 
 - [Arduino UNO Q](https://docs.arduino.cc/hardware/uno-q/), running its desktop on
   a touchscreen monitor connected through a USB-C hub
